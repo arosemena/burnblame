@@ -97,7 +97,32 @@ final class SamplerTests: XCTestCase {
         let result = sampler.sample(maxResults: 200, includeIdle: true)
         XCTAssertGreaterThan(result.selfCPUPercent, 40.0)
         XCTAssertLessThan(result.selfCPUPercent, 200.0)
-        XCTAssertGreaterThan(result.totalHeat1mSeconds, 0.05)
+        XCTAssertGreaterThan(result.totalHeat1mScore, 0.05)
+    }
+
+    func testMultiSourceHeatAttributionAndBenchmarks() {
+        let gpuProc = makeEntry(pid: 30, name: "Blender", bundlePath: "/Applications/Blender.app", heat1m: 2.0, gpu1m: 15.0, cpu: 10.0)
+        let diskProc = makeEntry(pid: 31, name: "mds_stores", bundlePath: nil, heat1m: 0.5, disk1m: 800_000_000, cpu: 3.0)
+
+        let groups = HeatGrouper.group(
+            processes: [gpuProc, diskProc],
+            window: .oneMinute,
+            totalHeatSeconds: gpuProc.heatScore(for: .oneMinute) + diskProc.heatScore(for: .oneMinute),
+            previousOrder: [],
+            freezeOrder: false
+        )
+
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(groups[0].name, "Blender")
+        XCTAssertEqual(groups[0].dominantSource, .gpu)
+        XCTAssertEqual(groups[1].name, "mds_stores")
+        XCTAssertEqual(groups[1].dominantSource, .disk)
+
+        // Benchmark all samplers gracefully
+        let gpu = GPUSampler().sample(scanPerProcess: false)
+        let smc = SMCSampler().sample()
+        XCTAssertGreaterThanOrEqual(gpu.deviceUtilizationPercent, 0)
+        XCTAssertGreaterThanOrEqual(smc.sampleDurationMs, 0)
     }
 
     func testFormatters() {
@@ -117,6 +142,8 @@ final class SamplerTests: XCTestCase {
         name: String,
         bundlePath: String? = nil,
         heat1m: Double = 0,
+        gpu1m: Double = 0,
+        disk1m: UInt64 = 0,
         cpu: Double = 1.0
     ) -> ProcessEntry {
         ProcessEntry(
@@ -142,6 +169,10 @@ final class SamplerTests: XCTestCase {
             totalCPUTimeSeconds: heat1m,
             heat1mSeconds: heat1m,
             heat5mSeconds: heat1m,
+            gpuHeat1mSeconds: gpu1m,
+            gpuHeat5mSeconds: gpu1m,
+            diskIO1mBytes: disk1m,
+            diskIO5mBytes: disk1m,
             exitedAt: nil
         )
     }

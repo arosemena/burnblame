@@ -57,6 +57,11 @@ public struct HeatGroupRowView: View {
                             if group.members.count > 1 {
                                 badge("\(group.members.count)", color: .secondary)
                             }
+                            if group.dominantSource == .gpu {
+                                badge("GPU", color: .indigo)
+                            } else if group.dominantSource == .disk {
+                                badge("DISK", color: .teal)
+                            }
                             if group.exitedCount > 0 && group.activeCount == 0 {
                                 badge("EXITED", color: .orange)
                             } else if group.exitedCount > 0 {
@@ -68,18 +73,31 @@ public struct HeatGroupRowView: View {
                         }
 
                         HStack(spacing: 5) {
-                            Text("\(Formatters.heatSeconds(group.heatSeconds)) CPU")
+                            Text("\(Formatters.heatSeconds(group.cpuHeatSeconds)) CPU")
                                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                 .foregroundStyle(.secondary)
 
-                            Text("·")
-                                .foregroundStyle(.tertiary)
-
-                            if group.activeCount > 0 {
+                            if group.gpuHeatSeconds >= 0.2 {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
+                                Text("\(Formatters.heatSeconds(group.gpuHeatSeconds)) GPU")
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.indigo)
+                            } else if group.diskIOBytes >= 10 * 1024 * 1024 {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
+                                Text("\(Formatters.memory(group.diskIOBytes)) I/O")
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.teal)
+                            } else if group.activeCount > 0 {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
                                 Text("now \(Formatters.cpu(group.liveCPUPercent))")
                                     .font(.system(size: 10.5, design: .monospaced))
                                     .foregroundStyle(group.liveCPUPercent >= 35 ? Theme.color(forCPUPercent: group.liveCPUPercent) : .secondary)
                             } else if let exitedAt = group.representative.exitedAt {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
                                 Text("ended \(Formatters.relativeTime(exitedAt))")
                                     .font(.system(size: 10.5))
                                     .foregroundStyle(.secondary)

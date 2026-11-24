@@ -1,23 +1,25 @@
 import Darwin
 import Foundation
 
-/// Lightweight native process sampler using `libproc` (`proc_listallpids` + `proc_pidinfo`).
-/// Tracks both live CPU% and a rolling 1m / 5m heat ledger (CPU-seconds burned),
+/// Lightweight native process sampler using `libproc` (`proc_listallpids` + `proc_pidinfo` + `proc_pid_rusage`).
+/// Tracks rolling 1m / 5m CPU-seconds, GPU-seconds (fed from GPUSampler), and Disk I/O bytes,
 /// retaining recently exited high-heat processes so hit-and-run culprits are never missed.
 public final class ProcessSampler: @unchecked Sendable {
     private struct HeatSample {
         let timestamp: TimeInterval
         let cpuSeconds: Double
+        let gpuSeconds: Double
+        let diskBytes: UInt64
     }
 
     private struct PreviousSample {
         let startTimeSec: UInt64
         let totalTimeNs: UInt64
+        var lastDiskIOBytes: UInt64?
         let peakCPU: Double
         var history: [Double]
         var highCPUSince: Date?
         var heatLedger: [HeatSample]
-        // Metadata snapshot in case process exits after burning significant heat
         var lastRawName: String
         var lastPPID: pid_t
         var lastUID: uid_t
@@ -81,14 +83,18 @@ public final class ProcessSampler: @unchecked Sendable {
         public let processes: [ProcessEntry]
         public let selfCPUPercent: Double
         public let totalProcessCount: Int
-        public let totalHeat1mSeconds: Double
-        public let totalHeat5mSeconds: Double
+        public let totalHeat1mScore: Double
+        public let totalHeat5mScore: Double
+        public let totalCPUHeat1mSeconds: Double
+        public let sampleDurationMs: Double
     }
 
     public func sample(
         maxResults: Int = 60,
-        includeIdle: Bool = true
+        includeIdle: Bool = true,
+        gpuDeltas: [pid_t: Double] = [:]
     ) -> SampleResult {
+        let tStart = CFAbsoluteTimeGetCurrent()
         let nowMonotonic = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         let nowDate = Date()
         let nowEpoch = nowDate.timeIntervalSince1970
@@ -106,8 +112,10 @@ public final class ProcessSampler: @unchecked Sendable {
                 processes: [],
                 selfCPUPercent: 0,
                 totalProcessCount: 0,
-                totalHeat1mSeconds: 0,
-                totalHeat5mSeconds: 0
+                totalHeat1mScore: 0,
+                totalHeat5mScore: 0,
+                totalCPUHeat1mSeconds: 0,
+                sampleDurationMs: (CFAbsoluteTimeGetCurrent() - tStart) * 1000.0
             )
         }
 
@@ -131,16 +139,21 @@ public final class ProcessSampler: @unchecked Sendable {
             let highCPUSince: Date?
             let niceValue: Int32
             let totalCPUTimeSeconds: Double
-            let heat1m: Double
-            let heat5m: Double
+            var cpuHeat1m: Double
+            var cpuHeat5m: Double
+            var gpuHeat1m: Double
+            var gpuHeat5m: Double
+            var disk1m: UInt64
+            var disk5m: UInt64
         }
 
         var rawProcs: [RawProc] = []
         rawProcs.reserveCapacity(pidCount)
 
         var selfCPU: Double = 0.0
-        var totalHeat1m: Double = 0.0
-        var totalHeat5m: Double = 0.0
+        var totalHeat1mScore: Double = 0.0
+        var totalHeat5mScore: Double = 0.0
+        var totalCPUHeat1m: Double = 0.0
 
         var taskAll = proc_taskallinfo()
         let taskAllSize = Int32(MemoryLayout<proc_taskallinfo>.stride)
@@ -163,6 +176,7 @@ public final class ProcessSampler: @unchecked Sendable {
                 let totalTicks = ptinfo.pti_total_user &+ ptinfo.pti_total_system
                 let totalNs = machTicksToNanoseconds(totalTicks)
                 let startSec = pbsd.pbi_start_tvsec
+                let gpuDelta = gpuDeltas[pid] ?? 0.0
 
                 var cpuPct: Double = 0.0
                 var deltaSec: Double = 0.0
@@ -170,6 +184,7 @@ public final class ProcessSampler: @unchecked Sendable {
                 var prevPeak: Double = 0.0
                 var highSince: Date? = nil
                 var ledger: [HeatSample] = []
+                var prevDiskIO: UInt64? = nil
 
                 if let prev = previousSamples[pid], prev.startTimeSec == startSec {
                     if let dt = elapsedNs, dt > 0, totalNs >= prev.totalTimeNs {
@@ -180,11 +195,11 @@ public final class ProcessSampler: @unchecked Sendable {
                     prevHistory = prev.history
                     prevPeak = max(prev.peakCPU, cpuPct)
                     ledger = prev.heatLedger
+                    prevDiskIO = prev.lastDiskIOBytes
                     if cpuPct >= sustainedThresholdCPU {
                         highSince = prev.highCPUSince ?? nowDate
                     }
                 } else {
-                    // Brand-new short-lived process: credit its initial CPU time if it started recently
                     let initialSec = Double(totalNs) / 1_000_000_000.0
                     if elapsedNs != nil && startSec > 0 && (nowEpoch - TimeInterval(startSec)) < 30.0 && initialSec > 0.05 {
                         deltaSec = min(initialSec, 15.0)
@@ -195,11 +210,15 @@ public final class ProcessSampler: @unchecked Sendable {
                     }
                 }
 
-                // Append to rolling heat ledger only when meaningful CPU was burned (keeps idle procs at 0 bytes)
-                if deltaSec >= 0.004 {
-                    ledger.append(HeatSample(timestamp: nowEpoch, cpuSeconds: deltaSec))
+                if deltaSec >= 0.004 || gpuDelta >= 0.002 {
+                    ledger.append(HeatSample(
+                        timestamp: nowEpoch,
+                        cpuSeconds: deltaSec,
+                        gpuSeconds: gpuDelta,
+                        diskBytes: 0
+                    ))
                 }
-                // Prune entries older than 5 minutes
+
                 if let firstValid = ledger.firstIndex(where: { $0.timestamp >= cutoff5m }) {
                     if firstValid > 0 {
                         ledger.removeFirst(firstValid)
@@ -208,18 +227,10 @@ public final class ProcessSampler: @unchecked Sendable {
                     ledger.removeAll(keepingCapacity: false)
                 }
 
-                // Sum 1m and 5m heat
-                var h1m: Double = 0.0
-                var h5m: Double = 0.0
-                for item in ledger {
-                    h5m += item.cpuSeconds
-                    if item.timestamp >= cutoff1m {
-                        h1m += item.cpuSeconds
-                    }
-                }
-
-                totalHeat1m += h1m
-                totalHeat5m += h5m
+                let sums = sumLedger(ledger, cutoff1m: cutoff1m)
+                totalCPUHeat1m += sums.cpu1m
+                totalHeat1mScore += sums.score1m
+                totalHeat5mScore += sums.score5m
 
                 prevHistory.append(cpuPct)
                 if prevHistory.count > maxHistoryPoints {
@@ -229,6 +240,7 @@ public final class ProcessSampler: @unchecked Sendable {
                 previousSamples[pid] = PreviousSample(
                     startTimeSec: startSec,
                     totalTimeNs: totalNs,
+                    lastDiskIOBytes: prevDiskIO,
                     peakCPU: prevPeak,
                     history: prevHistory,
                     highCPUSince: highSince,
@@ -260,8 +272,12 @@ public final class ProcessSampler: @unchecked Sendable {
                     highCPUSince: highSince,
                     niceValue: pbsd.pbi_nice,
                     totalCPUTimeSeconds: Double(totalNs) / 1_000_000_000.0,
-                    heat1m: h1m,
-                    heat5m: h5m
+                    cpuHeat1m: sums.cpu1m,
+                    cpuHeat5m: sums.cpu5m,
+                    gpuHeat1m: sums.gpu1m,
+                    gpuHeat5m: sums.gpu5m,
+                    disk1m: sums.disk1m,
+                    disk5m: sums.disk5m
                 ))
             } else {
                 let bsdRet = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsdOnly, bsdOnlySize)
@@ -272,14 +288,12 @@ public final class ProcessSampler: @unchecked Sendable {
             }
         }
 
-        // Capture any dead PIDs that burned significant heat before exiting!
+        // Capture exited culprits that burned significant heat before exiting
         var deadPIDs: [pid_t] = []
         for (pid, prev) in previousSamples where !alivePIDs.contains(pid) {
             deadPIDs.append(pid)
-            let sum5m = prev.heatLedger.reduce(0.0) { acc, item in
-                item.timestamp >= cutoff5m ? acc + item.cpuSeconds : acc
-            }
-            if sum5m >= exitedRetentionHeatThreshold {
+            let sums = sumLedger(prev.heatLedger, cutoff1m: cutoff1m)
+            if sums.score5m >= exitedRetentionHeatThreshold {
                 let meta = metadataCache[pid] ?? CachedMetadata(
                     startTimeSec: prev.startTimeSec,
                     executablePath: nil,
@@ -306,21 +320,17 @@ public final class ProcessSampler: @unchecked Sendable {
             metadataCache.removeValue(forKey: pid)
         }
 
-        // Age out exited culprits whose heat has fallen out of the 5m window
+        // Age out exited culprits
         var exitedEntries: [ProcessEntry] = []
         recentlyExited = recentlyExited.compactMap { culprit in
             var updated = culprit
             updated.heatLedger.removeAll { $0.timestamp < cutoff5m }
-            var h1m = 0.0
-            var h5m = 0.0
-            for item in updated.heatLedger {
-                h5m += item.cpuSeconds
-                if item.timestamp >= cutoff1m { h1m += item.cpuSeconds }
-            }
-            guard h5m >= 0.5 else { return nil }
+            let sums = sumLedger(updated.heatLedger, cutoff1m: cutoff1m)
+            guard sums.score5m >= 0.5 else { return nil }
 
-            totalHeat1m += h1m
-            totalHeat5m += h5m
+            totalCPUHeat1m += sums.cpu1m
+            totalHeat1mScore += sums.score1m
+            totalHeat5mScore += sums.score5m
 
             exitedEntries.append(ProcessEntry(
                 pid: updated.pid,
@@ -342,9 +352,13 @@ public final class ProcessSampler: @unchecked Sendable {
                 highCPUSince: nil,
                 startTime: updated.startTimeSec > 0 ? Date(timeIntervalSince1970: TimeInterval(updated.startTimeSec)) : nil,
                 niceValue: 0,
-                totalCPUTimeSeconds: h5m,
-                heat1mSeconds: h1m,
-                heat5mSeconds: h5m,
+                totalCPUTimeSeconds: sums.cpu5m,
+                heat1mSeconds: sums.cpu1m,
+                heat5mSeconds: sums.cpu5m,
+                gpuHeat1mSeconds: sums.gpu1m,
+                gpuHeat5mSeconds: sums.gpu5m,
+                diskIO1mBytes: sums.disk1m,
+                diskIO5mBytes: sums.disk5m,
                 exitedAt: updated.exitedAt
             ))
             return updated
@@ -353,13 +367,11 @@ public final class ProcessSampler: @unchecked Sendable {
             recentlyExited.removeFirst(recentlyExited.count - 40)
         }
 
-        // Sort live procs by 1m heat + 5m heat + live CPU so we resolve metadata for all real heat contributors
+        // Sort live procs by unified heat score so we only resolve rusage/metadata for the top slice
         rawProcs.sort { a, b in
-            let scoreA = a.heat1m * 4.0 + a.heat5m + a.cpuPercent * 0.15
-            let scoreB = b.heat1m * 4.0 + b.heat5m + b.cpuPercent * 0.15
-            if abs(scoreA - scoreB) > 0.01 {
-                return scoreA > scoreB
-            }
+            let sA = (a.cpuHeat1m + a.gpuHeat1m * 1.5) * 4.0 + a.cpuHeat5m + a.gpuHeat5m * 1.5 + a.cpuPercent * 0.15
+            let sB = (b.cpuHeat1m + b.gpuHeat1m * 1.5) * 4.0 + b.cpuHeat5m + b.gpuHeat5m * 1.5 + b.cpuPercent * 0.15
+            if abs(sA - sB) > 0.01 { return sA > sB }
             if a.state == .stopped && b.state != .stopped { return true }
             if a.state != .stopped && b.state == .stopped { return false }
             return a.residentBytes > b.residentBytes
@@ -368,15 +380,40 @@ public final class ProcessSampler: @unchecked Sendable {
         var results: [ProcessEntry] = []
         results.reserveCapacity(min(maxResults, rawProcs.count) + exitedEntries.count)
 
-        for proc in rawProcs {
+        for var proc in rawProcs {
             if results.count >= maxResults { break }
-            if !includeIdle && proc.heat1m < 0.05 && proc.heat5m < 0.1 && proc.cpuPercent < 1.0 && proc.state != .stopped {
+            if !includeIdle && proc.cpuHeat1m < 0.05 && proc.gpuHeat1m < 0.02 && proc.cpuHeat5m < 0.1 && proc.cpuPercent < 1.0 && proc.state != .stopped {
                 continue
             }
 
             let meta = resolveMetadata(pid: proc.pid, startTimeSec: proc.startTimeSec)
             let displayName = meta.displayName ?? proc.rawName
-            let memoryBytes = fetchPhysicalFootprint(pid: proc.pid) ?? proc.residentBytes
+            let rusage = fetchRusageFootprintAndDisk(pid: proc.pid)
+            let memoryBytes = rusage?.footprint ?? proc.residentBytes
+
+            // Zero-extra-cost Disk I/O delta from the exact same proc_pid_rusage call!
+            if let totalDisk = rusage?.totalDiskBytes, var prev = previousSamples[proc.pid] {
+                if let lastDisk = prev.lastDiskIOBytes, totalDisk > lastDisk {
+                    let deltaDisk = totalDisk - lastDisk
+                    if deltaDisk >= 512 * 1024 { // >= 512 KB
+                        prev.heatLedger.append(HeatSample(
+                            timestamp: nowEpoch,
+                            cpuSeconds: 0,
+                            gpuSeconds: 0,
+                            diskBytes: deltaDisk
+                        ))
+                        let updatedSums = sumLedger(prev.heatLedger, cutoff1m: cutoff1m)
+                        let addedScore1m = Double(deltaDisk) / 200_000_000.0
+                        totalHeat1mScore += addedScore1m
+                        totalHeat5mScore += addedScore1m
+                        proc.disk1m = updatedSums.disk1m
+                        proc.disk5m = updatedSums.disk5m
+                    }
+                }
+                prev.lastDiskIOBytes = totalDisk
+                previousSamples[proc.pid] = prev
+            }
+
             let parentName = rawNamesByPID[proc.ppid]
 
             results.append(ProcessEntry(
@@ -400,21 +437,52 @@ public final class ProcessSampler: @unchecked Sendable {
                 startTime: proc.startTimeSec > 0 ? Date(timeIntervalSince1970: TimeInterval(proc.startTimeSec)) : nil,
                 niceValue: proc.niceValue,
                 totalCPUTimeSeconds: proc.totalCPUTimeSeconds,
-                heat1mSeconds: proc.heat1m,
-                heat5mSeconds: proc.heat5m,
+                heat1mSeconds: proc.cpuHeat1m,
+                heat5mSeconds: proc.cpuHeat5m,
+                gpuHeat1mSeconds: proc.gpuHeat1m,
+                gpuHeat5mSeconds: proc.gpuHeat5m,
+                diskIO1mBytes: proc.disk1m,
+                diskIO5mBytes: proc.disk5m,
                 exitedAt: nil
             ))
         }
 
         results.append(contentsOf: exitedEntries)
 
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - tStart) * 1000.0
+
         return SampleResult(
             processes: results,
             selfCPUPercent: selfCPU,
             totalProcessCount: pidCount,
-            totalHeat1mSeconds: totalHeat1m,
-            totalHeat5mSeconds: totalHeat5m
+            totalHeat1mScore: totalHeat1mScore,
+            totalHeat5mScore: totalHeat5mScore,
+            totalCPUHeat1mSeconds: totalCPUHeat1m,
+            sampleDurationMs: elapsedMs
         )
+    }
+
+    private func sumLedger(_ ledger: [HeatSample], cutoff1m: TimeInterval) -> (
+        cpu1m: Double, cpu5m: Double,
+        gpu1m: Double, gpu5m: Double,
+        disk1m: UInt64, disk5m: UInt64,
+        score1m: Double, score5m: Double
+    ) {
+        var c1 = 0.0, c5 = 0.0, g1 = 0.0, g5 = 0.0
+        var d1: UInt64 = 0, d5: UInt64 = 0
+        for item in ledger {
+            c5 += item.cpuSeconds
+            g5 += item.gpuSeconds
+            d5 &+= item.diskBytes
+            if item.timestamp >= cutoff1m {
+                c1 += item.cpuSeconds
+                g1 += item.gpuSeconds
+                d1 &+= item.diskBytes
+            }
+        }
+        let s1 = c1 + g1 * 1.5 + Double(d1) / 200_000_000.0
+        let s5 = c5 + g5 * 1.5 + Double(d5) / 200_000_000.0
+        return (c1, c5, g1, g5, d1, d5, s1, s5)
     }
 
     private func fetchAllPIDs() -> Int {
@@ -447,7 +515,7 @@ public final class ProcessSampler: @unchecked Sendable {
         }
     }
 
-    private func fetchPhysicalFootprint(pid: pid_t) -> UInt64? {
+    private func fetchRusageFootprintAndDisk(pid: pid_t) -> (footprint: UInt64, totalDiskBytes: UInt64)? {
         var rusage = rusage_info_v4()
         let ret = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
             ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { rusagePtr in
@@ -455,7 +523,7 @@ public final class ProcessSampler: @unchecked Sendable {
             }
         }
         guard ret == 0 else { return nil }
-        return rusage.ri_phys_footprint
+        return (rusage.ri_phys_footprint, rusage.ri_diskio_bytesread &+ rusage.ri_diskio_byteswritten)
     }
 
     private func resolveMetadata(pid: pid_t, startTimeSec: UInt64) -> CachedMetadata {
@@ -469,8 +537,6 @@ public final class ProcessSampler: @unchecked Sendable {
         var displayName: String? = nil
 
         if let path = execPath {
-            // Use the FIRST (outermost) ".app/" so nested helpers (e.g. Cursor.app/Contents/Frameworks/Cursor Helper.app)
-            // roll up cleanly into the parent application bundle!
             if let appRange = path.range(of: ".app/") {
                 let bPath = String(path[..<appRange.upperBound].dropLast())
                 bundlePath = bPath
@@ -480,11 +546,7 @@ public final class ProcessSampler: @unchecked Sendable {
                     let appName = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
                         ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
                     if let appName, !appName.isEmpty {
-                        if execName.caseInsensitiveCompare(appName) == .orderedSame {
-                            displayName = appName
-                        } else {
-                            displayName = execName
-                        }
+                        displayName = execName.caseInsensitiveCompare(appName) == .orderedSame ? appName : execName
                     } else {
                         displayName = execName
                     }

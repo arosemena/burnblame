@@ -1,7 +1,7 @@
 import Foundation
 
-/// Groups processes into calm, logical app/family heat culprits and applies sort hysteresis
-/// so near-ties never jitter or jump under the user's cursor.
+/// Groups processes into calm, logical app/family heat culprits (CPU + GPU + Disk I/O)
+/// and applies sort hysteresis so near-ties never jitter or jump under the user's cursor.
 public enum HeatGrouper {
     public static func group(
         processes: [ProcessEntry],
@@ -31,8 +31,8 @@ public enum HeatGrouper {
 
         for (key, rawMembers) in buckets {
             let sortedMembers = rawMembers.sorted { a, b in
-                let ha = a.heatSeconds(for: window)
-                let hb = b.heatSeconds(for: window)
+                let ha = a.heatScore(for: window)
+                let hb = b.heatScore(for: window)
                 if abs(ha - hb) > 0.05 { return ha > hb }
                 if abs(a.cpuPercent - b.cpuPercent) > 0.5 { return a.cpuPercent > b.cpuPercent }
                 return a.memoryBytes > b.memoryBytes
@@ -40,12 +40,15 @@ public enum HeatGrouper {
 
             guard let rep = sortedMembers.first else { continue }
 
-            let sumHeat = sortedMembers.reduce(0.0) { $0 + $1.heatSeconds(for: window) }
-            let sumCPU = sortedMembers.reduce(0.0) { $0 + $1.cpuPercent }
+            let sumScore = sortedMembers.reduce(0.0) { $0 + $1.heatScore(for: window) }
+            let sumCPUHeat = sortedMembers.reduce(0.0) { $0 + $1.cpuHeatSeconds(for: window) }
+            let sumGPUHeat = sortedMembers.reduce(0.0) { $0 + $1.gpuHeatSeconds(for: window) }
+            let sumDisk = sortedMembers.reduce(UInt64(0)) { $0 &+ $1.diskIOBytes(for: window) }
+            let sumLiveCPU = sortedMembers.reduce(0.0) { $0 + $1.cpuPercent }
             let sumMem = sortedMembers.reduce(UInt64(0)) { $0 + ($1.isExited ? 0 : $1.memoryBytes) }
             let exitedCount = sortedMembers.filter(\.isExited).count
             let activeCount = sortedMembers.count - exitedCount
-            let share = totalHeatSeconds > 0.1 ? min(100.0, (sumHeat / denominator) * 100.0) : 0.0
+            let share = totalHeatSeconds > 0.1 ? min(100.0, (sumScore / denominator) * 100.0) : 0.0
 
             groups.append(HeatGroup(
                 id: key,
@@ -53,9 +56,12 @@ public enum HeatGrouper {
                 bundlePath: bundleByKey[key],
                 representative: rep,
                 members: sortedMembers,
-                heatSeconds: sumHeat,
+                heatSeconds: sumScore,
+                cpuHeatSeconds: sumCPUHeat,
+                gpuHeatSeconds: sumGPUHeat,
+                diskIOBytes: sumDisk,
                 heatSharePercent: share,
-                liveCPUPercent: sumCPU,
+                liveCPUPercent: sumLiveCPU,
                 totalMemoryBytes: sumMem,
                 isSystemGroup: sortedMembers.allSatisfy(\.isSystemProcess),
                 activeCount: activeCount,
@@ -63,7 +69,6 @@ public enum HeatGrouper {
             ))
         }
 
-        // Base ranking by heatSeconds (fallback to liveCPU when just launched and ledger is warming up)
         var ranked = groups.sorted { a, b in
             if abs(a.heatSeconds - b.heatSeconds) > 0.05 {
                 return a.heatSeconds > b.heatSeconds
@@ -81,7 +86,6 @@ public enum HeatGrouper {
         let prevIndex = Dictionary(uniqueKeysWithValues: previousOrder.enumerated().map { ($1, $0) })
 
         if freezeOrder {
-            // Keep existing rows completely stationary while hovering; append brand-new ones at the bottom
             ranked.sort { a, b in
                 let ia = prevIndex[a.id] ?? Int.max
                 let ib = prevIndex[b.id] ?? Int.max
@@ -91,8 +95,6 @@ public enum HeatGrouper {
             return ranked
         }
 
-        // Gentle hysteresis: keep previous relative order unless the challenger beats the incumbent
-        // by at least 10% AND 0.5 CPU-seconds (prevents jittering between near-ties).
         var byID = Dictionary(uniqueKeysWithValues: ranked.map { ($0.id, $0) })
         var ordered: [HeatGroup] = []
         ordered.reserveCapacity(ranked.count)
@@ -102,12 +104,10 @@ public enum HeatGrouper {
                 ordered.append(g)
             }
         }
-        // Append newly arrived groups
         for g in ranked where byID[g.id] != nil {
             ordered.append(g)
         }
 
-        // Bubble up any group that decisively beats the one above it
         for i in 1..<ordered.count {
             var j = i
             while j > 0 {

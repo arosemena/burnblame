@@ -53,6 +53,26 @@ public enum HeatWindow: String, CaseIterable, Sendable {
     }
 }
 
+public struct SelfTelemetry: Sendable, Equatable {
+    public let selfCPUPercent: Double
+    public let cpuTickMs: Double
+    public let gpuTickMs: Double
+    public let smcTickMs: Double
+    public let procTickMs: Double
+
+    public var totalTickMs: Double {
+        cpuTickMs + gpuTickMs + smcTickMs + procTickMs
+    }
+
+    public static let zero = SelfTelemetry(
+        selfCPUPercent: 0,
+        cpuTickMs: 0,
+        gpuTickMs: 0,
+        smcTickMs: 0,
+        procTickMs: 0
+    )
+}
+
 public struct SystemCPUSnapshot: Sendable, Equatable {
     public let user: Double      // 0...100
     public let system: Double    // 0...100
@@ -117,9 +137,13 @@ public struct ProcessEntry: Identifiable, Sendable, Equatable {
     public let niceValue: Int32
     public let totalCPUTimeSeconds: Double
 
-    // Thermal / Heat accounting over rolling windows (CPU-seconds burned)
+    // Rolling multi-source heat accounting (CPU-sec, GPU-sec, Disk I/O bytes)
     public let heat1mSeconds: Double
     public let heat5mSeconds: Double
+    public let gpuHeat1mSeconds: Double
+    public let gpuHeat5mSeconds: Double
+    public let diskIO1mBytes: UInt64
+    public let diskIO5mBytes: UInt64
     public let exitedAt: Date?
 
     public var isPaused: Bool {
@@ -130,11 +154,28 @@ public struct ProcessEntry: Identifiable, Sendable, Equatable {
         state == .exited || exitedAt != nil
     }
 
+    public func cpuHeatSeconds(for window: HeatWindow) -> Double {
+        window == .fiveMinutes ? heat5mSeconds : heat1mSeconds
+    }
+
+    public func gpuHeatSeconds(for window: HeatWindow) -> Double {
+        window == .fiveMinutes ? gpuHeat5mSeconds : gpuHeat1mSeconds
+    }
+
+    public func diskIOBytes(for window: HeatWindow) -> UInt64 {
+        window == .fiveMinutes ? diskIO5mBytes : diskIO1mBytes
+    }
+
+    /// Unified heat score combining CPU-seconds + weighted GPU-seconds (1.5x) + Disk I/O energy.
+    public func heatScore(for window: HeatWindow) -> Double {
+        let cpu = cpuHeatSeconds(for: window)
+        let gpu = gpuHeatSeconds(for: window)
+        let disk = Double(diskIOBytes(for: window)) / 200_000_000.0
+        return cpu + (gpu * 1.5) + disk
+    }
+
     public func heatSeconds(for window: HeatWindow) -> Double {
-        switch window {
-        case .oneMinute, .events: return heat1mSeconds
-        case .fiveMinutes: return heat5mSeconds
-        }
+        heatScore(for: window)
     }
 
     public var sustainedHighDuration: TimeInterval? {
@@ -149,22 +190,31 @@ public struct ProcessEntry: Identifiable, Sendable, Equatable {
     }
 
     public var severity: CPUSeverity {
-        if heat1mSeconds >= 45 || cpuPercent >= 80 { return .critical }
-        if heat1mSeconds >= 18 || cpuPercent >= 35 { return .elevated }
-        if heat1mSeconds >= 5 || cpuPercent >= 12 { return .moderate }
+        let score = heatScore(for: .oneMinute)
+        if score >= 45 || cpuPercent >= 80 { return .critical }
+        if score >= 18 || cpuPercent >= 35 { return .elevated }
+        if score >= 5 || cpuPercent >= 12 { return .moderate }
         return .calm
     }
 }
 
-/// A logical app or process-family group that rolls up helpers & short-lived children
-/// so the user sees a stable, calm ranking of what is actually heating up the Mac.
+public enum HeatSourceTag: String, Sendable, Equatable {
+    case cpu = "CPU"
+    case gpu = "GPU"
+    case disk = "DISK"
+}
+
+/// A logical app or process-family group rolling up helpers & short-lived children.
 public struct HeatGroup: Identifiable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let bundlePath: String?
     public let representative: ProcessEntry
     public let members: [ProcessEntry]
-    public let heatSeconds: Double
+    public let heatSeconds: Double       // Unified heat score (CPU + 1.5*GPU + Disk)
+    public let cpuHeatSeconds: Double
+    public let gpuHeatSeconds: Double
+    public let diskIOBytes: UInt64
     public let heatSharePercent: Double
     public let liveCPUPercent: Double
     public let totalMemoryBytes: UInt64
@@ -172,17 +222,23 @@ public struct HeatGroup: Identifiable, Sendable, Equatable {
     public let activeCount: Int
     public let exitedCount: Int
 
+    public var dominantSource: HeatSourceTag {
+        let gpuWeighted = gpuHeatSeconds * 1.5
+        let diskWeighted = Double(diskIOBytes) / 200_000_000.0
+        if gpuWeighted > cpuHeatSeconds && gpuWeighted >= 0.5 {
+            return .gpu
+        }
+        if diskWeighted > cpuHeatSeconds && diskWeighted >= 0.5 {
+            return .disk
+        }
+        return .cpu
+    }
+
     public var severity: CPUSeverity {
         if heatSharePercent >= 35 || heatSeconds >= 45 { return .critical }
         if heatSharePercent >= 18 || heatSeconds >= 18 { return .elevated }
         if heatSharePercent >= 7 || heatSeconds >= 5 { return .moderate }
         return .calm
-    }
-
-    /// Average cores saturated over the window (e.g., 60 CPU-sec in 60s = 1.0 core avg)
-    public func avgCores(windowSeconds: TimeInterval) -> Double {
-        guard windowSeconds > 0 else { return 0 }
-        return heatSeconds / windowSeconds
     }
 }
 
@@ -192,16 +248,21 @@ public struct ThermalCulpritSnapshot: Identifiable, Sendable, Equatable {
     public let pid: pid_t
     public let heatSeconds: Double
     public let sharePercent: Double
+    public let dominantSource: HeatSourceTag
     public let executablePath: String?
 }
 
-/// Recorded automatically whenever macOS thermal state escalates or sustained high load occurs.
+/// Recorded automatically whenever fans spin up, die temp climbs, macOS thermal state escalates, or sustained load occurs.
 public struct ThermalEvent: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let startedAt: Date
     public var endedAt: Date?
     public var peakThermalLevel: ThermalLevel
     public var peakSystemCPU: Double
+    public var peakGPU: Double
+    public var peakTempC: Double?
+    public var peakFanRPM: Double?
+    public var peakWatts: Double?
     public var reason: String
     public var culprits: [ThermalCulpritSnapshot]
 

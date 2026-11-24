@@ -7,24 +7,29 @@ public struct ActionToast: Equatable, Sendable {
     public let isError: Bool
 }
 
-/// Adaptive thermal & process monitoring coordinator.
-/// - Tracks macOS `ProcessInfo.thermalState` + rolling 1m / 5m CPU-seconds heat ledger.
-/// - Automatically logs Thermal Events whenever thermal pressure escalates or sustained high load occurs.
-/// - Groups helpers under their parent app and stabilizes ordering with hysteresis + hover-freeze.
+/// Adaptive thermal, GPU, SMC, and process monitoring coordinator.
+/// - Closed popover: ultra-lean 3s CPU ticks, SMC + GPU + process scans every 6s (or immediately on spikes).
+/// - Open popover: 2s live updates with real °C, Fan RPM, Watts, GPU%, and multi-source heat attribution.
+/// - Tracks its own per-tick millisecond cost (`telemetry`) so overhead stays visible and lean.
 @MainActor
 @Observable
 public final class MonitorEngine {
     public private(set) var systemCPU: SystemCPUSnapshot = .zero
+    public private(set) var gpu: GPUSnapshot = .zero
+    public private(set) var hardwareThermal: HardwareThermalSnapshot = .empty
     public private(set) var thermalLevel: ThermalLevel = ThermalLevel(state: ProcessInfo.processInfo.thermalState)
     public private(set) var cpuHistory: [Double] = Array(repeating: 0, count: 32)
     public private(set) var processes: [ProcessEntry] = []
     public private(set) var heatGroups: [HeatGroup] = []
-    public private(set) var totalHeat1mSeconds: Double = 0
-    public private(set) var totalHeat5mSeconds: Double = 0
+    public private(set) var totalHeat1mScore: Double = 0
+    public private(set) var totalHeat5mScore: Double = 0
+    public private(set) var totalCPUHeat1mSeconds: Double = 0
     public private(set) var thermalEvents: [ThermalEvent] = []
-    public private(set) var selfCPUPercent: Double = 0
+    public private(set) var telemetry: SelfTelemetry = .zero
     public private(set) var totalProcessCount: Int = 0
     public private(set) var lastUpdated: Date = Date()
+
+    public var selfCPUPercent: Double { telemetry.selfCPUPercent }
 
     public var selectedWindow: HeatWindow = .oneMinute {
         didSet {
@@ -76,6 +81,8 @@ public final class MonitorEngine {
     public var toast: ActionToast?
 
     private let cpuSampler = SystemCPUSampler()
+    private let gpuSampler = GPUSampler()
+    private let smcSampler = SMCSampler()
     private let processSampler = ProcessSampler()
     private let inspector = ProcessInspector()
     private let workerQueue = DispatchQueue(label: "com.macwatcher.sampler", qos: .utility)
@@ -99,7 +106,6 @@ public final class MonitorEngine {
         let storedThreshold = defaults.double(forKey: "alertThresholdPercent")
         self.alertThresholdPercent = storedThreshold > 0 ? storedThreshold : 35.0
 
-        // Listen for instant macOS thermal pressure changes (zero polling cost!)
         thermalObserver = NotificationCenter.default.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification,
             object: nil,
@@ -141,23 +147,26 @@ public final class MonitorEngine {
         return processes.first { $0.pid == pid }
     }
 
-    public var topHeatCulprit: HeatGroup? {
-        heatGroups.first { $0.heatSeconds >= 8.0 || $0.heatSharePercent >= 25.0 }
-    }
-
     public var avgLoad1mPercent: Double {
         let cores = Double(max(1, systemCPU.coreCount))
-        return min(100.0, (totalHeat1mSeconds / (60.0 * cores)) * 100.0)
+        return min(100.0, (totalCPUHeat1mSeconds / (60.0 * cores)) * 100.0)
     }
 
     public var menuBarSeverity: CPUSeverity {
-        if thermalLevel >= .hot || systemCPU.total >= 80 {
+        if thermalLevel >= .hot
+            || (hardwareThermal.cpuTempC ?? 0) >= 92
+            || (hardwareThermal.peakFanRPM ?? 0) >= 3500
+            || systemCPU.total >= 80 {
             return .critical
         }
-        if thermalLevel == .warm || systemCPU.total >= alertThresholdPercent {
+        if thermalLevel == .warm
+            || (hardwareThermal.cpuTempC ?? 0) >= 75
+            || (hardwareThermal.peakFanRPM ?? 0) >= 1800
+            || gpu.deviceUtilizationPercent >= 65
+            || systemCPU.total >= alertThresholdPercent {
             return .elevated
         }
-        if systemCPU.total >= 15 {
+        if systemCPU.total >= 15 || gpu.deviceUtilizationPercent >= 25 {
             return .moderate
         }
         return .calm
@@ -257,7 +266,7 @@ public final class MonitorEngine {
         case .success:
             showToast(successMessage, isError: false)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.triggerSample(forceProcessScan: true)
+                self?.triggerSample(forceFullScan: true)
             }
         case .failure(let error):
             showToast(error.localizedDescription, isError: true)
@@ -271,8 +280,7 @@ public final class MonitorEngine {
         let escalated = newLevel > thermalLevel
         thermalLevel = newLevel
         if escalated {
-            // Immediately scan processes so we capture who caused the thermal jump!
-            triggerSample(forceProcessScan: true)
+            triggerSample(forceFullScan: true)
         }
     }
 
@@ -280,8 +288,12 @@ public final class MonitorEngine {
         let currentThermal = ThermalLevel(state: ProcessInfo.processInfo.thermalState)
         thermalLevel = currentThermal
 
-        let isHighCPU = systemCPU.total >= alertThresholdPercent
-        if isHighCPU {
+        let highCPU = systemCPU.total >= alertThresholdPercent
+        let highGPU = gpu.deviceUtilizationPercent >= 60.0
+        let highTemp = (hardwareThermal.cpuTempC ?? 0) >= 85.0
+        let fansSpinningHard = (hardwareThermal.peakFanRPM ?? 0) >= 2000.0
+
+        if highCPU || highGPU {
             if sustainedLoadStart == nil {
                 sustainedLoadStart = now
             }
@@ -289,29 +301,53 @@ public final class MonitorEngine {
             sustainedLoadStart = nil
         }
 
-        let sustainedHigh = sustainedLoadStart.map { now.timeIntervalSince($0) >= 10.0 } ?? false
-        let isThermalElevated = currentThermal >= .warm
+        let sustainedLoad = sustainedLoadStart.map { now.timeIntervalSince($0) >= 10.0 } ?? false
+        let isThermalTriggered = currentThermal >= .warm || highTemp || fansSpinningHard
 
-        if isThermalElevated || sustainedHigh {
+        if isThermalTriggered || sustainedLoad {
             let culprits = makeCulpritSnapshots()
 
             if let activeID = activeThermalEventID,
                let idx = thermalEvents.firstIndex(where: { $0.id == activeID }) {
                 thermalEvents[idx].peakThermalLevel = max(thermalEvents[idx].peakThermalLevel, currentThermal)
                 thermalEvents[idx].peakSystemCPU = max(thermalEvents[idx].peakSystemCPU, systemCPU.total)
+                thermalEvents[idx].peakGPU = max(thermalEvents[idx].peakGPU, gpu.deviceUtilizationPercent)
+                if let temp = hardwareThermal.cpuTempC {
+                    thermalEvents[idx].peakTempC = max(thermalEvents[idx].peakTempC ?? temp, temp)
+                }
+                if let rpm = hardwareThermal.peakFanRPM {
+                    thermalEvents[idx].peakFanRPM = max(thermalEvents[idx].peakFanRPM ?? rpm, rpm)
+                }
+                if let w = hardwareThermal.systemPowerWatts {
+                    thermalEvents[idx].peakWatts = max(thermalEvents[idx].peakWatts ?? w, w)
+                }
                 if !culprits.isEmpty {
                     thermalEvents[idx].culprits = culprits
                 }
             } else {
-                let reason = isThermalElevated
-                    ? "macOS thermal pressure rose to \(currentThermal.label)"
-                    : "Sustained CPU load ≥ \(Int(alertThresholdPercent))%"
+                let reason: String
+                if fansSpinningHard, let rpm = hardwareThermal.peakFanRPM {
+                    reason = "Fans spun up to \(Int(rpm)) RPM"
+                } else if highTemp, let temp = hardwareThermal.cpuTempC {
+                    reason = "CPU die reached \(Int(temp))°C"
+                } else if currentThermal >= .warm {
+                    reason = "macOS thermal pressure rose to \(currentThermal.label)"
+                } else if highGPU {
+                    reason = "Sustained GPU load (\(Int(gpu.deviceUtilizationPercent))%)"
+                } else {
+                    reason = "Sustained CPU load ≥ \(Int(alertThresholdPercent))%"
+                }
+
                 let event = ThermalEvent(
                     id: UUID(),
                     startedAt: sustainedLoadStart ?? now,
                     endedAt: nil,
                     peakThermalLevel: currentThermal,
                     peakSystemCPU: systemCPU.total,
+                    peakGPU: gpu.deviceUtilizationPercent,
+                    peakTempC: hardwareThermal.cpuTempC,
+                    peakFanRPM: hardwareThermal.peakFanRPM,
+                    peakWatts: hardwareThermal.systemPowerWatts,
                     reason: reason,
                     culprits: culprits
                 )
@@ -333,7 +369,7 @@ public final class MonitorEngine {
         let windowGroups = HeatGrouper.group(
             processes: processes,
             window: .oneMinute,
-            totalHeatSeconds: totalHeat1mSeconds,
+            totalHeatSeconds: totalHeat1mScore,
             previousOrder: [],
             freezeOrder: false
         )
@@ -344,13 +380,14 @@ public final class MonitorEngine {
                 pid: g.representative.pid,
                 heatSeconds: g.heatSeconds,
                 sharePercent: g.heatSharePercent,
+                dominantSource: g.dominantSource,
                 executablePath: g.representative.executablePath
             )
         }
     }
 
     private func recomputeGroups(resetOrder: Bool) {
-        let totalHeat = selectedWindow == .fiveMinutes ? totalHeat5mSeconds : totalHeat1mSeconds
+        let totalHeat = selectedWindow == .fiveMinutes ? totalHeat5mScore : totalHeat1mScore
         let grouped = HeatGrouper.group(
             processes: processes,
             window: selectedWindow,
@@ -368,10 +405,18 @@ public final class MonitorEngine {
 
     private func primeBaseline() {
         let cpuSampler = self.cpuSampler
+        let gpuSampler = self.gpuSampler
+        let smcSampler = self.smcSampler
         let processSampler = self.processSampler
-        workerQueue.async {
+        workerQueue.async { [weak self] in
             _ = cpuSampler.sample()
+            let gpuSnap = gpuSampler.sample(scanPerProcess: false)
+            let smcSnap = smcSampler.sample()
             _ = processSampler.sample(maxResults: 40, includeIdle: false)
+            Task { @MainActor [weak self] in
+                self?.gpu = gpuSnap
+                self?.hardwareThermal = smcSnap
+            }
         }
     }
 
@@ -384,7 +429,6 @@ public final class MonitorEngine {
         stopTimer()
         guard !isMonitoringPaused else { return }
 
-        // Open: 2.0s calm live cadence; Closed: 3.0s micro-tick
         let interval: TimeInterval = isPopoverOpen ? 2.0 : 3.0
         let newTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -396,41 +440,51 @@ public final class MonitorEngine {
         timer = newTimer
 
         if immediateSample {
-            triggerSample(forceProcessScan: true)
+            triggerSample(forceFullScan: true)
         }
     }
 
     private func tick() {
         if isPopoverOpen {
-            triggerSample(forceProcessScan: true)
+            triggerSample(forceFullScan: true)
         } else {
             backgroundTickCounter += 1
-            // Even when closed, scan processes every ~6s (every 2nd tick) or immediately on load/thermal spikes
-            // so the 1m & 5m heat ledger is always accurate the moment you hear the fans!
-            let shouldPeriodicScan = (backgroundTickCounter % 2 == 0)
-            triggerSample(forceProcessScan: shouldPeriodicScan)
+            // Closed: full SMC + GPU + process scan only every 6s (2nd tick), micro CPU check every 3s
+            let shouldFullScan = (backgroundTickCounter % 2 == 0)
+            triggerSample(forceFullScan: shouldFullScan)
         }
     }
 
-    public func triggerSample(forceProcessScan: Bool) {
+    public func triggerSample(forceFullScan: Bool) {
         let cpuSampler = self.cpuSampler
+        let gpuSampler = self.gpuSampler
+        let smcSampler = self.smcSampler
         let processSampler = self.processSampler
         let threshold = self.alertThresholdPercent
         let isOpen = self.isPopoverOpen
         let currentThermal = ThermalLevel(state: ProcessInfo.processInfo.thermalState)
 
         workerQueue.async { [weak self] in
+            let tCpu0 = CFAbsoluteTimeGetCurrent()
             let cpuSnap = cpuSampler.sample()
-            let shouldScanProcesses = forceProcessScan
+            let cpuMs = (CFAbsoluteTimeGetCurrent() - tCpu0) * 1000.0
+
+            let shouldRunHeavySensors = forceFullScan
                 || isOpen
                 || cpuSnap.total >= min(threshold, 25.0)
                 || currentThermal >= .warm
 
+            var gpuSnap: GPUSnapshot? = nil
+            var smcSnap: HardwareThermalSnapshot? = nil
             var procResult: ProcessSampler.SampleResult? = nil
-            if shouldScanProcesses {
+
+            if shouldRunHeavySensors {
+                gpuSnap = gpuSampler.sample(scanPerProcess: isOpen)
+                smcSnap = smcSampler.sample()
                 let sampled = processSampler.sample(
                     maxResults: isOpen ? 60 : 30,
-                    includeIdle: isOpen
+                    includeIdle: isOpen,
+                    gpuDeltas: gpuSnap?.processGPUDeltaSeconds ?? [:]
                 )
                 IconCache.shared.prefetch(entries: sampled.processes)
                 procResult = sampled
@@ -445,13 +499,27 @@ public final class MonitorEngine {
                 }
                 self.lastUpdated = cpuSnap.timestamp
 
+                if let gpuSnap {
+                    self.gpu = gpuSnap
+                }
+                if let smcSnap {
+                    self.hardwareThermal = smcSnap
+                }
                 if let procResult {
                     self.processes = procResult.processes
-                    self.selfCPUPercent = procResult.selfCPUPercent
                     self.totalProcessCount = procResult.totalProcessCount
-                    self.totalHeat1mSeconds = procResult.totalHeat1mSeconds
-                    self.totalHeat5mSeconds = procResult.totalHeat5mSeconds
+                    self.totalHeat1mScore = procResult.totalHeat1mScore
+                    self.totalHeat5mScore = procResult.totalHeat5mScore
+                    self.totalCPUHeat1mSeconds = procResult.totalCPUHeat1mSeconds
                     self.recomputeGroups(resetOrder: false)
+
+                    self.telemetry = SelfTelemetry(
+                        selfCPUPercent: procResult.selfCPUPercent,
+                        cpuTickMs: cpuMs,
+                        gpuTickMs: gpuSnap?.sampleDurationMs ?? 0,
+                        smcTickMs: smcSnap?.sampleDurationMs ?? 0,
+                        procTickMs: procResult.sampleDurationMs
+                    )
                 }
 
                 self.updateThermalEvents(now: cpuSnap.timestamp)

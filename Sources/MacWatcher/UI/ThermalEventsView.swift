@@ -68,9 +68,23 @@ public struct ThermalEventsView: View {
 
                 Spacer()
 
-                Text("Peak \(Int(event.peakSystemCPU.rounded()))%")
-                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(levelColor)
+                HStack(spacing: 6) {
+                    if let temp = event.peakTempC {
+                        Text("\(Int(temp.rounded()))°C")
+                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(temp >= 85 ? .red : .orange)
+                    }
+                    if let rpm = event.peakFanRPM, rpm >= 100 {
+                        Text("\(Int(rpm.rounded())) RPM")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let watts = event.peakWatts {
+                        Text(String(format: "%.0fW", watts))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Text(event.reason)

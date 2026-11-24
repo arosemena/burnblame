@@ -70,64 +70,128 @@ public struct PopoverRootView: View {
 
     private var thermalHeroHeader: some View {
         let thermalColor = Theme.color(for: engine.thermalLevel)
+        let hw = engine.hardwareThermal
 
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                // Thermal State Pill
-                HStack(spacing: 5) {
-                    Image(systemName: engine.thermalLevel.symbolName)
-                        .font(.system(size: 11, weight: .bold))
-                    Text("Thermal: \(engine.thermalLevel.label)")
-                        .font(.system(size: 11, weight: .bold))
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(thermalColor.opacity(0.16)))
-                .foregroundStyle(thermalColor)
+        return VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    // Thermal State Pill + Power Watts
+                    HStack(spacing: 6) {
+                        HStack(spacing: 4) {
+                            Image(systemName: engine.thermalLevel.symbolName)
+                                .font(.system(size: 10.5, weight: .bold))
+                            Text(engine.thermalLevel.label)
+                                .font(.system(size: 10.5, weight: .bold))
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(Capsule().fill(thermalColor.opacity(0.16)))
+                        .foregroundStyle(thermalColor)
 
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(String(format: "%.0f%%", engine.systemCPU.total))
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.color(for: engine.menuBarSeverity))
-                        .contentTransition(.numericText())
+                        if let watts = hw.systemPowerWatts {
+                            HStack(spacing: 2.5) {
+                                Image(systemName: "bolt.fill")
+                                    .font(.system(size: 9))
+                                Text(String(format: "%.1fW", watts))
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                            }
+                            .foregroundStyle(watts >= 30 ? .orange : .secondary)
+                        }
+                    }
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("live load")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "1m avg %.0f%%", engine.avgLoad1mPercent))
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                    // Live CPU + GPU numbers
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text(String(format: "%.0f%%", engine.systemCPU.total))
+                                .font(.system(size: 24, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.color(for: engine.menuBarSeverity))
+                                .contentTransition(.numericText())
+                            Text("CPU")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text(String(format: "%.0f%%", engine.gpu.deviceUtilizationPercent))
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(engine.gpu.deviceUtilizationPercent >= 40 ? .indigo : .primary.opacity(0.8))
+                            Text("GPU")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
-                Text("\(engine.systemCPU.coreCount) cores · \(Formatters.heatSeconds(engine.totalHeat1mSeconds)) burned / 1m")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 4)
+
+                SparklineView(
+                    values: engine.cpuHistory,
+                    maxValue: 100.0,
+                    accentColor: Theme.color(for: engine.menuBarSeverity)
+                )
+                .frame(width: 152, height: 50)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(0.04))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.75)
+                )
             }
 
-            Spacer(minLength: 6)
-
-            SparklineView(
-                values: engine.cpuHistory,
-                maxValue: 100.0,
-                accentColor: Theme.color(for: engine.menuBarSeverity)
-            )
-            .frame(width: 164, height: 58)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.primary.opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.75)
-            )
+            // Hardware Sensor Strip (Real °C + Fan RPM + 1m Avg)
+            HStack(spacing: 6) {
+                if let cpuC = hw.cpuTempC {
+                    sensorPill(
+                        icon: "thermometer.medium",
+                        label: "CPU",
+                        value: "\(Int(cpuC.rounded()))°C",
+                        tint: cpuC >= 85 ? .red : (cpuC >= 70 ? .orange : .secondary)
+                    )
+                }
+                if let gpuC = hw.gpuTempC {
+                    sensorPill(
+                        icon: "square.stack.3d.up.fill",
+                        label: "GPU",
+                        value: "\(Int(gpuC.rounded()))°C",
+                        tint: gpuC >= 80 ? .red : (gpuC >= 65 ? .orange : .secondary)
+                    )
+                }
+                if let rpm = hw.peakFanRPM {
+                    sensorPill(
+                        icon: "fanblades.fill",
+                        label: rpm >= 100 ? "\(Int(rpm.rounded())) RPM" : "Fans off",
+                        value: "",
+                        tint: rpm >= 2500 ? .orange : (rpm >= 100 ? .cyan : .secondary)
+                    )
+                }
+                Spacer(minLength: 0)
+                Text(String(format: "1m avg %.0f%%", engine.avgLoad1mPercent))
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, 11)
+    }
+
+    private func sensorPill(icon: String, label: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 3.5) {
+            Image(systemName: icon)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(value.isEmpty ? label : "\(label) \(value)")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(tint == .secondary ? .primary.opacity(0.85) : tint)
+        }
+        .padding(.horizontal, 6.5)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
     }
 
     // MARK: - Active Heat Banner
@@ -324,7 +388,7 @@ public struct PopoverRootView: View {
                 Text(
                     engine.isMonitoringPaused
                         ? "Paused"
-                        : String(format: "Watcher: %.1f%% CPU", engine.selfCPUPercent)
+                        : String(format: "Watcher: %.1f%% · %.1fms/tick", engine.selfCPUPercent, engine.telemetry.totalTickMs)
                 )
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -395,7 +459,23 @@ public struct PopoverRootView: View {
                 Slider(value: $engine.alertThresholdPercent, in: 20...85, step: 5)
             }
 
-            Text("Ranks apps by rolling CPU-seconds burned (heat) over 1m / 5m and logs thermal pressure spikes.")
+            Divider().opacity(0.5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("SAMPLER OVERHEAD (LAST TICK)")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .tracking(0.5)
+                let t = engine.telemetry
+                Text(String(
+                    format: "CPU %.2fms · GPU %.1fms · SMC %.1fms · Procs %.1fms",
+                    t.cpuTickMs, t.gpuTickMs, t.smcTickMs, t.procTickMs
+                ))
+                .font(.system(size: 9.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+
+            Text("Ranks apps by unified heat (CPU + 1.5× GPU + Disk I/O) over 1m / 5m. Heavy sensors pause to 6s cadence when closed.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

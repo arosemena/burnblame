@@ -15,7 +15,8 @@ let package = Package(
             path: "Sources/MacWatcher",
             linkerSettings: [
                 .linkedFramework("AppKit"),
-                .linkedFramework("SwiftUI")
+                .linkedFramework("SwiftUI"),
+                .linkedFramework("IOKit")
             ]
         ),
         .testTarget(
