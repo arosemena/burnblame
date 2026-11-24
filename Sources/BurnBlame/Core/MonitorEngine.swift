@@ -195,11 +195,11 @@ public final class MonitorEngine {
         let watts = hardwareThermal.systemPowerWatts ?? 0
 
         let hardwareLevel: ThermalLevel
-        if maxTemp >= 98 || rpm >= 4500 {
+        if maxTemp >= 98 || (rpm >= 4500 && maxTemp >= 80) {
             hardwareLevel = .critical
-        } else if maxTemp >= 85 || rpm >= 2400 || watts >= 45 {
+        } else if maxTemp >= 85 || (rpm >= 3200 && maxTemp >= 72) || (watts >= 45 && maxTemp >= 75) {
             hardwareLevel = .hot
-        } else if maxTemp >= 68 || rpm >= 1200 || watts >= 25 {
+        } else if maxTemp >= 68 || rpm >= 1800 || watts >= 25 {
             hardwareLevel = .warm
         } else {
             hardwareLevel = .cool
