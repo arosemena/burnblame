@@ -1,4 +1,4 @@
-# BurnBlame
+<h1><img src="docs/icon.png" width="38" height="38" align="absmiddle" alt="BurnBlame icon" />&nbsp; BurnBlame</h1>
 
 **Know what made your MacBook fans spin up — and deal with it in seconds.**
 
