@@ -97,6 +97,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
+echo "==> Stripping extended attributes (e.g. com.apple.quarantine)..."
+xattr -cr "$APP_BUNDLE"
+
 echo "==> Signing sandboxed app bundle..."
 codesign --force --deep --timestamp \
     --entitlements "$ROOT_DIR/entitlements/BurnBlame-MAS.entitlements" \
