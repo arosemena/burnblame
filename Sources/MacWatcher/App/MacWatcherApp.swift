@@ -91,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeEngine() {
         withObservationTracking {
             _ = engine.systemCPU
-            _ = engine.thermalLevel
+            _ = engine.effectiveThermalLevel
             _ = engine.showPercentInMenuBar
             _ = engine.menuBarSeverity
             _ = engine.isMonitoringPaused
@@ -107,10 +107,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button else { return }
 
         let severity = engine.menuBarSeverity
+        let thermal = engine.effectiveThermalLevel
         let symbolName: String = {
             if engine.isMonitoringPaused { return "pause.circle" }
-            if engine.thermalLevel >= .hot { return "flame.fill" }
-            if engine.thermalLevel == .warm { return "thermometer.high" }
+            if thermal >= .hot { return "flame.fill" }
+            if thermal == .warm { return "thermometer.high" }
             switch severity {
             case .critical: return "flame.fill"
             case .elevated: return "thermometer.medium"

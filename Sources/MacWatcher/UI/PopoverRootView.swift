@@ -197,7 +197,8 @@ private struct ThermalHeroHeaderView: View {
     let engine: MonitorEngine
 
     var body: some View {
-        let thermalColor = Theme.color(for: engine.thermalLevel)
+        let thermal = engine.effectiveThermalLevel
+        let thermalColor = Theme.color(for: thermal)
         let hw = engine.hardwareThermal
 
         VStack(spacing: 8) {
@@ -205,9 +206,9 @@ private struct ThermalHeroHeaderView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         HStack(spacing: 4) {
-                            Image(systemName: engine.thermalLevel.symbolName)
+                            Image(systemName: thermal.symbolName)
                                 .font(.system(size: 10.5, weight: .bold))
-                            Text(engine.thermalLevel.label)
+                            Text(thermal.label)
                                 .font(.system(size: 10.5, weight: .bold))
                         }
                         .padding(.horizontal, 7)

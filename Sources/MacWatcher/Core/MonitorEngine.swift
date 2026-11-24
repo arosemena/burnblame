@@ -185,16 +185,34 @@ public final class MonitorEngine {
         return min(100.0, (totalCPUHeat1mSeconds / (60.0 * cores)) * 100.0)
     }
 
+    /// Combines macOS `ProcessInfo.thermalState` (which only flips once throttling begins)
+    /// with real AppleSMC die temperature, fan RPM, and power draw so the badge matches reality.
+    public var effectiveThermalLevel: ThermalLevel {
+        let cpuC = hardwareThermal.cpuTempC ?? 0
+        let gpuC = hardwareThermal.gpuTempC ?? 0
+        let maxTemp = max(cpuC, gpuC)
+        let rpm = hardwareThermal.peakFanRPM ?? 0
+        let watts = hardwareThermal.systemPowerWatts ?? 0
+
+        let hardwareLevel: ThermalLevel
+        if maxTemp >= 98 || rpm >= 4500 {
+            hardwareLevel = .critical
+        } else if maxTemp >= 85 || rpm >= 2400 || watts >= 45 {
+            hardwareLevel = .hot
+        } else if maxTemp >= 68 || rpm >= 1200 || watts >= 25 {
+            hardwareLevel = .warm
+        } else {
+            hardwareLevel = .cool
+        }
+
+        return max(thermalLevel, hardwareLevel)
+    }
+
     public var menuBarSeverity: CPUSeverity {
-        if thermalLevel >= .hot
-            || (hardwareThermal.cpuTempC ?? 0) >= 92
-            || (hardwareThermal.peakFanRPM ?? 0) >= 3500
-            || systemCPU.total >= 80 {
+        if effectiveThermalLevel >= .hot || systemCPU.total >= 80 {
             return .critical
         }
-        if thermalLevel == .warm
-            || (hardwareThermal.cpuTempC ?? 0) >= 75
-            || (hardwareThermal.peakFanRPM ?? 0) >= 1800
+        if effectiveThermalLevel == .warm
             || gpu.deviceUtilizationPercent >= 65
             || systemCPU.total >= alertThresholdPercent {
             return .elevated
@@ -507,6 +525,8 @@ public final class MonitorEngine {
         let processSampler = self.processSampler
         let threshold = self.alertThresholdPercent
         let isOpen = self.isPopoverOpen
+        let scanGPUClients = isOpen && (self.backgroundTickCounter % 2 == 0)
+        self.backgroundTickCounter += 1
         let currentThermal = ThermalLevel(state: ProcessInfo.processInfo.thermalState)
 
         workerQueue.async { [weak self] in
@@ -524,10 +544,10 @@ public final class MonitorEngine {
             var procResult: ProcessSampler.SampleResult? = nil
 
             if shouldRunHeavySensors {
-                gpuSnap = gpuSampler.sample(scanPerProcess: isOpen)
+                gpuSnap = gpuSampler.sample(scanPerProcess: scanGPUClients)
                 smcSnap = smcSampler.sample()
                 let sampled = processSampler.sample(
-                    maxResults: isOpen ? 60 : 30,
+                    maxResults: isOpen ? 28 : 20,
                     includeIdle: isOpen,
                     gpuDeltas: gpuSnap?.processGPUDeltaSeconds ?? [:]
                 )
