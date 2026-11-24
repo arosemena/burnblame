@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftUI
 
 public struct ActionToast: Equatable, Sendable {
     public let message: String
@@ -86,6 +87,7 @@ public final class MonitorEngine {
     private let processSampler = ProcessSampler()
     private let inspector = ProcessInspector()
     private let workerQueue = DispatchQueue(label: "com.macwatcher.sampler", qos: .utility)
+    private let inspectorQueue = DispatchQueue(label: "com.macwatcher.inspector", qos: .userInitiated)
 
     private var timer: Timer?
     private var backgroundTickCounter: Int = 0
@@ -184,12 +186,14 @@ public final class MonitorEngine {
         isLoadingInspection = true
 
         let inspector = self.inspector
-        workerQueue.async { [weak self] in
+        inspectorQueue.async { [weak self] in
             let details = inspector.inspect(entry: entry)
             Task { @MainActor [weak self] in
                 guard let self, self.selectedPID == entry.pid else { return }
-                self.selectedInspection = details
-                self.isLoadingInspection = false
+                withAnimation(.easeOut(duration: 0.16)) {
+                    self.selectedInspection = details
+                    self.isLoadingInspection = false
+                }
             }
         }
     }

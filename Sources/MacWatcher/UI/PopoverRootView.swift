@@ -355,10 +355,12 @@ public struct PopoverRootView: View {
                                 window: engine.selectedWindow,
                                 isExpanded: expandedGroupIDs.contains(group.id),
                                 onToggleExpand: {
-                                    if expandedGroupIDs.contains(group.id) {
-                                        expandedGroupIDs.remove(group.id)
-                                    } else {
-                                        expandedGroupIDs.insert(group.id)
+                                    withAnimation(.snappy(duration: 0.2)) {
+                                        if expandedGroupIDs.contains(group.id) {
+                                            expandedGroupIDs.remove(group.id)
+                                        } else {
+                                            expandedGroupIDs.insert(group.id)
+                                        }
                                     }
                                 },
                                 onInspect: { entry in

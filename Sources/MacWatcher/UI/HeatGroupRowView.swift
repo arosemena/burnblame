@@ -125,13 +125,16 @@ public struct HeatGroupRowView: View {
                             .frame(width: 52)
                     }
 
-                    Image(systemName: isMultiMember ? (isExpanded ? "chevron.down" : "chevron.right") : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(isHovered ? Color.primary.opacity(0.75) : Color.secondary.opacity(0.4))
+                        .foregroundStyle(isHovered || isExpanded ? Color.primary.opacity(0.8) : Color.secondary.opacity(0.4))
+                        .rotationEffect(.degrees(isMultiMember && isExpanded ? 90 : 0))
+                        .animation(.snappy(duration: 0.18), value: isExpanded)
                         .frame(width: 10)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7.5)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -139,7 +142,7 @@ public struct HeatGroupRowView: View {
             if isExpanded && isMultiMember {
                 Divider().opacity(0.35).padding(.horizontal, 10)
 
-                VStack(spacing: 2) {
+                VStack(spacing: 2.5) {
                     ForEach(group.members.prefix(8)) { member in
                         childRow(member)
                     }
@@ -152,6 +155,7 @@ public struct HeatGroupRowView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .background(

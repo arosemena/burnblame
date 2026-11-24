@@ -190,10 +190,13 @@ public final class ProcessInspector: @unchecked Sendable {
         var ports = Set<String>()
         var socketInfo = socket_fdinfo()
         let socketInfoSize = Int32(MemoryLayout<socket_fdinfo>.stride)
+        var socketsChecked = 0
 
         for i in 0..<count {
             let fd = fds[i]
             if fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+                socketsChecked += 1
+                if socketsChecked > 256 { break }
                 let ret = proc_pidfdinfo(
                     pid,
                     fd.proc_fd,

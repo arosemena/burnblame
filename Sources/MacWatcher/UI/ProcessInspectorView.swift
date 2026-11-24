@@ -27,11 +27,18 @@ public struct ProcessInspectorView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 11) {
                         telemetryCard(entry: entry)
-                        originForensicsCard(entry: entry)
-                        commandLineCard
-                        if let ports = inspection?.listeningPorts, !ports.isEmpty {
-                            listeningPortsCard(ports: ports)
+
+                        if engine.isLoadingInspection && inspection == nil {
+                            forensicLoadingCard(entry: entry)
+                                .transition(.opacity)
+                        } else {
+                            originForensicsCard(entry: entry)
+                            commandLineCard
+                            if let ports = inspection?.listeningPorts, !ports.isEmpty {
+                                listeningPortsCard(ports: ports)
+                            }
                         }
+
                         if entry.isSystemProcess {
                             systemWarningBanner
                         }
@@ -226,6 +233,52 @@ public struct ProcessInspectorView: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(Capsule().fill(color.opacity(0.14)))
+    }
+
+    // MARK: - Forensic Loading Card
+
+    private func forensicLoadingCard(entry: ProcessEntry) -> some View {
+        let message: String = {
+            switch abs(Int(entry.pid)) % 4 {
+            case 0: return "Interrogating the kernel for who spawned \(entry.name)…"
+            case 1: return "Tracing launch ancestry, working folder & open sockets…"
+            case 2: return "Checking LaunchAgents, command args & file descriptors…"
+            default: return "Following the breadcrumb trail back to launchd…"
+            }
+        }()
+
+        return HStack(spacing: 11) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.14))
+                    .frame(width: 34, height: 34)
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text("Inspecting Process")
+                        .font(.system(size: 12, weight: .semibold))
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(message)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.primary.opacity(0.04)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(0.2), lineWidth: 0.75)
+        )
     }
 
     // MARK: - Forensic Origin Card
