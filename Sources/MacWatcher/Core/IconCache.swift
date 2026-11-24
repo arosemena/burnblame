@@ -1,22 +1,23 @@
 import AppKit
+import CoreGraphics
 import Foundation
 
+public enum CachedIcon: Sendable {
+    case bitmap(CGImage)
+    case symbol(String)
+}
+
 /// Thread-safe, zero-main-thread-I/O icon cache.
-/// Icons are prefetched on the background sampler queue before rows are published to SwiftUI,
-/// so `icon(for:)` on the main thread is always a pure O(1) in-memory lookup.
+/// - App bundles are pre-rasterized once on the background queue into an exact 2x Retina (52x52px) `CGImage`
+///   for direct Metal/CoreAnimation texture binding (no `NSImage` bridging overhead).
+/// - CLI/system processes resolve to crisp vector SF Symbol names.
 public final class IconCache: @unchecked Sendable {
     public static let shared = IconCache()
 
     private let lock = NSLock()
-    private var cache: [String: NSImage] = [:]
-    private let fallbackSymbol: NSImage
+    private var cache: [String: CachedIcon] = [:]
 
-    private init() {
-        let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .medium)
-        self.fallbackSymbol = NSImage(systemSymbolName: "cpu.fill", accessibilityDescription: nil)?
-            .withSymbolConfiguration(config)
-            ?? NSImage(size: NSSize(width: 24, height: 24))
-    }
+    private init() {}
 
     /// Call from a background queue to warm icons for a batch of processes before publishing to UI.
     public func prefetch(entries: [ProcessEntry]) {
@@ -27,18 +28,18 @@ public final class IconCache: @unchecked Sendable {
             lock.unlock()
             if exists { continue }
 
-            let image = loadIcon(for: entry)
+            let loaded = loadIcon(for: entry)
             lock.lock()
             if cache.count > 160 {
                 cache.removeAll(keepingCapacity: true)
             }
-            cache[key] = image
+            cache[key] = loaded
             lock.unlock()
         }
     }
 
-    /// Fast O(1) lookup for SwiftUI rendering. Never performs disk I/O or LaunchServices IPC.
-    public func icon(for entry: ProcessEntry) -> NSImage {
+    /// Pure O(1) lookup for SwiftUI rendering. Never performs disk I/O or LaunchServices IPC.
+    public func cachedIcon(for entry: ProcessEntry) -> CachedIcon {
         let key = cacheKey(for: entry)
         lock.lock()
         if let cached = cache[key] {
@@ -47,8 +48,20 @@ public final class IconCache: @unchecked Sendable {
         }
         lock.unlock()
 
-        // Pure in-memory SF Symbol fallback if not yet prefetched
-        return symbolFallback(for: entry) ?? fallbackSymbol
+        return .symbol(symbolName(for: entry))
+    }
+
+    /// Convenience for Inspector header (also O(1)).
+    public func nsImage(for entry: ProcessEntry) -> NSImage {
+        switch cachedIcon(for: entry) {
+        case .bitmap(let cg):
+            return NSImage(cgImage: cg, size: NSSize(width: 26, height: 26))
+        case .symbol(let name):
+            let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .medium)
+            return NSImage(systemSymbolName: name, accessibilityDescription: entry.name)?
+                .withSymbolConfiguration(config)
+                ?? NSImage(size: NSSize(width: 26, height: 26))
+        }
     }
 
     private func cacheKey(for entry: ProcessEntry) -> String {
@@ -58,19 +71,17 @@ public final class IconCache: @unchecked Sendable {
         return "sym:\(entry.name.lowercased()):\(entry.isSystemProcess)"
     }
 
-    private func loadIcon(for entry: ProcessEntry) -> NSImage {
-        let rawImage: NSImage
+    private func loadIcon(for entry: ProcessEntry) -> CachedIcon {
         if let bundlePath = entry.bundlePath {
-            rawImage = NSWorkspace.shared.icon(forFile: bundlePath)
-        } else {
-            rawImage = symbolFallback(for: entry) ?? fallbackSymbol
+            let nsIcon = NSWorkspace.shared.icon(forFile: bundlePath)
+            if let cg = rasterizeToCGImage(nsIcon, pointSize: NSSize(width: 26, height: 26)) {
+                return .bitmap(cg)
+            }
         }
-        // Pre-rasterize into a crisp 2x Retina (52x52px) bitmap so SwiftUI never downscales
-        // 512x512 / 1024x1024 .icns representations on the main thread during scrolling!
-        return rasterize(rawImage, pointSize: NSSize(width: 26, height: 26))
+        return .symbol(symbolName(for: entry))
     }
 
-    private func rasterize(_ source: NSImage, pointSize: NSSize) -> NSImage {
+    private func rasterizeToCGImage(_ source: NSImage, pointSize: NSSize) -> CGImage? {
         let pixelW = Int(pointSize.width * 2)
         let pixelH = Int(pointSize.height * 2)
         guard let rep = NSBitmapImageRep(
@@ -85,8 +96,7 @@ public final class IconCache: @unchecked Sendable {
             bytesPerRow: 0,
             bitsPerPixel: 0
         ) else {
-            source.size = pointSize
-            return source
+            return nil
         }
         rep.size = pointSize
 
@@ -103,29 +113,21 @@ public final class IconCache: @unchecked Sendable {
         }
         NSGraphicsContext.restoreGraphicsState()
 
-        let result = NSImage(size: pointSize)
-        result.addRepresentation(rep)
-        result.isTemplate = source.isTemplate
-        return result
+        return rep.cgImage
     }
 
-    private func symbolFallback(for entry: ProcessEntry) -> NSImage? {
+    private func symbolName(for entry: ProcessEntry) -> String {
         let lower = entry.name.lowercased()
-        let symbolName: String
         if ["zsh", "bash", "sh", "fish", "tmux"].contains(lower) {
-            symbolName = "terminal.fill"
+            return "terminal.fill"
         } else if ["node", "bun", "deno", "python", "python3", "ruby", "java", "go", "rustc", "swift", "clang", "swift-frontend"].contains(lower) {
-            symbolName = "chevron.left.forwardslash.chevron.right"
+            return "chevron.left.forwardslash.chevron.right"
         } else if lower.contains("docker") || lower.contains("container") || lower.contains("qemu") {
-            symbolName = "shippingbox.fill"
+            return "shippingbox.fill"
         } else if entry.isSystemProcess {
-            symbolName = "gearshape.fill"
+            return "gearshape.fill"
         } else {
-            symbolName = "cpu.fill"
+            return "cpu.fill"
         }
-
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-        return NSImage(systemSymbolName: symbolName, accessibilityDescription: entry.name)?
-            .withSymbolConfiguration(config)
     }
 }

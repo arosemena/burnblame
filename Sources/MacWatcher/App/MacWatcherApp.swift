@@ -12,8 +12,15 @@ struct MacWatcherEntry {
     }
 }
 
+/// Borderless, non-activating floating panel (like Raycast / iStat Menus / Bartender).
+/// Faster open/close and smoother 120Hz scrolling than NSPopover, with zero arrow-mask compositing overhead.
+final class FloatingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private struct RenderedStatusState: Equatable {
         let symbolName: String
         let severity: CPUSeverity
@@ -21,9 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private var statusItem: NSStatusItem!
-    private var popover: NSPopover!
+    private var panel: FloatingPanel!
     private var engine: MonitorEngine!
     private var lastRenderedStatus: RenderedStatusState?
+    private var globalClickMonitor: Any?
+    private var localKeyMonitor: Any?
+
+    private let panelSize = NSSize(width: 406, height: 550)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Stay strictly in the menu bar — no Dock icon or app switcher clutter
@@ -31,26 +42,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         engine = MonitorEngine()
 
-        // Configure popover: animates = false eliminates AppKit's ~200ms close-animation dead window
-        // where clicks on the status bar icon get silently ignored, and makes opening instantaneous.
-        let hostingController = NSHostingController(rootView: PopoverRootView(engine: engine))
-        // Pre-warm SwiftUI hosting view so the very first click has zero cold-start layout lag
-        _ = hostingController.view
+        // Build floating rounded panel with native vibrancy material
+        let p = FloatingPanel(
+            contentRect: NSRect(origin: .zero, size: panelSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        p.level = .statusBar
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.isMovable = false
 
-        let pop = NSPopover()
-        pop.contentSize = NSSize(width: 406, height: 550)
-        pop.behavior = .transient
-        pop.animates = false
-        pop.delegate = self
-        pop.contentViewController = hostingController
-        self.popover = pop
+        let container = NSVisualEffectView(frame: NSRect(origin: .zero, size: panelSize))
+        container.material = .popover
+        container.state = .active
+        container.blendingMode = .behindWindow
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 14
+        container.layer?.masksToBounds = true
+        container.layer?.borderWidth = 0.5
+        container.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+
+        let hostingView = NSHostingView(rootView: PopoverRootView(engine: engine))
+        hostingView.frame = container.bounds
+        hostingView.autoresizingMask = [.width, .height]
+        container.addSubview(hostingView)
+
+        p.contentView = container
+        // Pre-warm layout pass so first click is instant
+        p.contentView?.layoutSubtreeIfNeeded()
+        self.panel = p
 
         // Configure status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.target = self
-            button.action = #selector(togglePopover(_:))
-            // Fire on mouseDown for instant response without waiting for release or losing clicks on redraw
+            button.action = #selector(togglePanel(_:))
             button.sendAction(on: [.leftMouseDown, .rightMouseDown])
             updateStatusBarButton()
         }
@@ -97,7 +127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             severity: severity,
             title: titleText
         )
-        // Skip redundant button redraws when displayed text/icon didn't actually change
         guard nextState != lastRenderedStatus else { return }
         lastRenderedStatus = nextState
 
@@ -127,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    @objc private func togglePopover(_ sender: AnyObject?) {
+    @objc private func togglePanel(_ sender: AnyObject?) {
         guard let button = statusItem.button else { return }
 
         if let event = NSApp.currentEvent,
@@ -136,21 +165,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
 
-        if popover.isShown {
-            popover.close()
+        if panel.isVisible {
+            hidePanel()
         } else {
-            // Show immediately on the current frame; activate lazily so WindowServer focus switch doesn't stall open
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            DispatchQueue.main.async { [weak self] in
-                NSApp.activate(ignoringOtherApps: true)
-                self?.popover.contentViewController?.view.window?.makeKey()
+            showPanel(relativeTo: button)
+        }
+    }
+
+    private func showPanel(relativeTo button: NSStatusBarButton) {
+        if let buttonWindow = button.window {
+            let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+            let screenFrame = buttonWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+
+            var x = buttonRect.midX - panelSize.width / 2.0
+            let minX = screenFrame.minX + 8
+            let maxX = screenFrame.maxX - panelSize.width - 8
+            x = min(max(x, minX), maxX)
+
+            let y = buttonRect.minY - panelSize.height - 6
+            panel.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
+        }
+
+        engine.isPopoverOpen = true
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        installDismissMonitors()
+    }
+
+    private func hidePanel() {
+        removeDismissMonitors()
+        panel.orderOut(nil)
+        engine.isPopoverOpen = false
+    }
+
+    private func installDismissMonitors() {
+        removeDismissMonitors()
+
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.panel.isVisible else { return }
+                let mouseLoc = NSEvent.mouseLocation
+                // Ignore clicks inside the panel or on the status bar button itself (handled by togglePanel)
+                if self.panel.frame.contains(mouseLoc) { return }
+                if let btnWin = self.statusItem.button?.window, btnWin.frame.contains(mouseLoc) { return }
+                self.hidePanel()
             }
+        }
+
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { // Escape
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if self.engine.selectedPID != nil {
+                        self.engine.clearSelection()
+                    } else {
+                        self.hidePanel()
+                    }
+                }
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeDismissMonitors() {
+        if let m = globalClickMonitor {
+            NSEvent.removeMonitor(m)
+            globalClickMonitor = nil
+        }
+        if let m = localKeyMonitor {
+            NSEvent.removeMonitor(m)
+            localKeyMonitor = nil
         }
     }
 
     private func showContextMenu(from button: NSStatusBarButton) {
-        if popover.isShown {
-            popover.close()
+        if panel.isVisible {
+            hidePanel()
         }
 
         let menu = NSMenu()
@@ -188,15 +279,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func quitApp() {
         NSApplication.shared.terminate(nil)
-    }
-
-    // MARK: - NSPopoverDelegate (Drives Adaptive Sampling!)
-
-    func popoverWillShow(_ notification: Notification) {
-        engine.isPopoverOpen = true
-    }
-
-    func popoverDidClose(_ notification: Notification) {
-        engine.isPopoverOpen = false
     }
 }

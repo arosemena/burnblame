@@ -4,12 +4,34 @@ import SwiftUI
 /// - Zero per-row `.onHover` tracking areas (prevents mid-scroll state churn).
 /// - Minimal layer tree (no redundant stroke overlays on calm rows).
 /// - Pre-cached O(1) icon lookup.
-public struct HeatGroupRowView: View {
+public struct HeatGroupRowView: View, Equatable {
     public let group: HeatGroup
     public let window: HeatWindow
     public let isExpanded: Bool
     public let onToggleExpand: () -> Void
     public let onInspect: (ProcessEntry) -> Void
+
+    /// Quantized equality on displayed values so SwiftUI skips CoreText re-layouts
+    /// when a row's visible numbers haven't actually changed.
+    public nonisolated static func == (lhs: HeatGroupRowView, rhs: HeatGroupRowView) -> Bool {
+        guard lhs.group.id == rhs.group.id,
+              lhs.isExpanded == rhs.isExpanded,
+              lhs.window == rhs.window,
+              lhs.group.members.count == rhs.group.members.count,
+              lhs.group.exitedCount == rhs.group.exitedCount,
+              lhs.group.dominantSource == rhs.group.dominantSource,
+              lhs.group.severity == rhs.group.severity,
+              Int(lhs.group.heatSharePercent.rounded()) == Int(rhs.group.heatSharePercent.rounded()),
+              Int(lhs.group.liveCPUPercent.rounded()) == Int(rhs.group.liveCPUPercent.rounded()),
+              Formatters.heatSeconds(lhs.group.cpuHeatSeconds) == Formatters.heatSeconds(rhs.group.cpuHeatSeconds),
+              Formatters.heatSeconds(lhs.group.gpuHeatSeconds) == Formatters.heatSeconds(rhs.group.gpuHeatSeconds)
+        else { return false }
+
+        if lhs.isExpanded {
+            return lhs.group.members.prefix(8).map(\.pid) == rhs.group.members.prefix(8).map(\.pid)
+        }
+        return true
+    }
 
     public init(
         group: HeatGroup,
@@ -217,21 +239,19 @@ public struct HeatGroupRowView: View {
 
     @ViewBuilder
     private var groupIcon: some View {
-        let nsImage = IconCache.shared.icon(for: group.representative)
-        if group.bundlePath != nil {
-            Image(nsImage: nsImage)
+        switch IconCache.shared.cachedIcon(for: group.representative) {
+        case .bitmap(let cgImage):
+            Image(decorative: cgImage, scale: 2.0)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 26, height: 26)
-        } else {
+        case .symbol(let symbolName):
             ZStack {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(accentColor.opacity(0.14))
                     .frame(width: 26, height: 26)
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 15, height: 15)
+                Image(systemName: symbolName)
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(accentColor)
             }
         }

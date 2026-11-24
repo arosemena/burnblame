@@ -488,8 +488,14 @@ public final class MonitorEngine {
             triggerSample(forceFullScan: true)
         } else {
             backgroundTickCounter += 1
-            // Closed: full SMC + GPU + process scan only every 6s (2nd tick), micro CPU check every 3s
-            let shouldFullScan = (backgroundTickCounter % 2 == 0)
+            // When closed and cool (CPU < 15%, fans off, Thermal Cool), stretch full scan to every 15s (5th tick)
+            // for ~60% lower idle CPU/battery; snap back to 6s whenever warm or active.
+            let isQuietAndCool = systemCPU.total < 15.0
+                && thermalLevel == .cool
+                && !hardwareThermal.fansActive
+                && gpu.deviceUtilizationPercent < 10.0
+            let fullScanModulo = isQuietAndCool ? 5 : 2
+            let shouldFullScan = (backgroundTickCounter % fullScanModulo == 0)
             triggerSample(forceFullScan: shouldFullScan)
         }
     }

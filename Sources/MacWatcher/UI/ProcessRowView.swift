@@ -107,7 +107,7 @@ public struct ProcessRowView: View {
 
     @ViewBuilder
     private var processIcon: some View {
-        let nsImage = IconCache.shared.icon(for: entry)
+        let nsImage = IconCache.shared.nsImage(for: entry)
         ZStack {
             if entry.bundlePath == nil {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)

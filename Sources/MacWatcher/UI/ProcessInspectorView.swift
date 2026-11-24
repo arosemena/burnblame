@@ -124,7 +124,7 @@ public struct ProcessInspectorView: View {
     private func telemetryCard(entry: ProcessEntry) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                let nsImage = IconCache.shared.icon(for: entry)
+                let nsImage = IconCache.shared.nsImage(for: entry)
                 Image(nsImage: nsImage)
                     .resizable()
                     .interpolation(.high)

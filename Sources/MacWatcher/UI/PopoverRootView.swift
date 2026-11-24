@@ -410,6 +410,7 @@ private struct HeatGroupListSection: View {
                                     engine.selectProcess(entry)
                                 }
                             )
+                            .equatable()
                         }
 
                         if !isSearching && (quietCount > 0 || showQuietApps) {
