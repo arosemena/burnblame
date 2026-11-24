@@ -84,25 +84,12 @@ struct MarketingCanvas<Content: View>: View {
                 // Left: Apple-style product copy
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(spacing: 10) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color(red: 0.18, green: 0.18, blue: 0.23), Color(red: 0.08, green: 0.08, blue: 0.11)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                                .frame(width: 42, height: 42)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
-                                )
-                            Image(systemName: "flame.fill")
-                                .font(.system(size: 21, weight: .bold))
-                                .foregroundStyle(
-                                    LinearGradient(colors: [.yellow, .orange, .red], startPoint: .top, endPoint: .bottom)
-                                )
+                        if let iconImg = NSImage(contentsOfFile: "docs/icon.png") {
+                            Image(nsImage: iconImg)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 46, height: 46)
                         }
                         Text("BurnBlame")
                             .font(.system(size: 20, weight: .bold, design: .rounded))
