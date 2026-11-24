@@ -41,6 +41,8 @@ public final class MonitorEngine {
     }
 
     public var isHoveringList: Bool = false
+    public private(set) var isLiveScrolling: Bool = false
+    public private(set) var listRenderCount: Int = 0
     public var searchQuery: String = ""
     public var hideSystemProcesses: Bool = false {
         didSet { UserDefaults.standard.set(hideSystemProcesses, forKey: "hideSystemProcesses") }
@@ -96,6 +98,9 @@ public final class MonitorEngine {
     private var lastGroupOrder: [String] = []
     private var toastTask: Task<Void, Never>?
     private var thermalObserver: NSObjectProtocol?
+    private var scrollStartObserver: NSObjectProtocol?
+    private var scrollEndObserver: NSObjectProtocol?
+    private var pendingGroupRefreshAfterScroll: Bool = false
 
     public init() {
         let defaults = UserDefaults.standard
@@ -115,6 +120,32 @@ public final class MonitorEngine {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.handleThermalStateNotification()
+            }
+        }
+
+        // Defer list SwiftUI diffs while NSScrollView is actively live-scrolling for buttery 120Hz scrolling
+        scrollStartObserver = NotificationCenter.default.addObserver(
+            forName: NSScrollView.willStartLiveScrollNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.isLiveScrolling = true
+            }
+        }
+
+        scrollEndObserver = NotificationCenter.default.addObserver(
+            forName: NSScrollView.didEndLiveScrollNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isLiveScrolling = false
+                if self.pendingGroupRefreshAfterScroll {
+                    self.pendingGroupRefreshAfterScroll = false
+                    self.recomputeGroups(resetOrder: false)
+                }
             }
         }
 
@@ -391,6 +422,10 @@ public final class MonitorEngine {
     }
 
     private func recomputeGroups(resetOrder: Bool) {
+        if isLiveScrolling && !resetOrder {
+            pendingGroupRefreshAfterScroll = true
+            return
+        }
         let totalHeat = selectedWindow == .fiveMinutes ? totalHeat5mScore : totalHeat1mScore
         let grouped = HeatGrouper.group(
             processes: processes,

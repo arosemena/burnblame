@@ -389,7 +389,9 @@ private struct HeatGroupListSection: View {
                 .frame(maxWidth: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
-                    LazyVStack(spacing: 5) {
+                    // Use plain VStack instead of LazyVStack: with ~8-20 rows, all rows stay laid out
+                    // once so trackpad scrolling is pure GPU translation with zero mid-scroll view creation!
+                    VStack(spacing: 5) {
                         ForEach(significantItems) { group in
                             HeatGroupRowView(
                                 group: group,

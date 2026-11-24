@@ -59,14 +59,54 @@ public final class IconCache: @unchecked Sendable {
     }
 
     private func loadIcon(for entry: ProcessEntry) -> NSImage {
-        let image: NSImage
+        let rawImage: NSImage
         if let bundlePath = entry.bundlePath {
-            image = NSWorkspace.shared.icon(forFile: bundlePath)
+            rawImage = NSWorkspace.shared.icon(forFile: bundlePath)
         } else {
-            image = symbolFallback(for: entry) ?? fallbackSymbol
+            rawImage = symbolFallback(for: entry) ?? fallbackSymbol
         }
-        image.size = NSSize(width: 28, height: 28)
-        return image
+        // Pre-rasterize into a crisp 2x Retina (52x52px) bitmap so SwiftUI never downscales
+        // 512x512 / 1024x1024 .icns representations on the main thread during scrolling!
+        return rasterize(rawImage, pointSize: NSSize(width: 26, height: 26))
+    }
+
+    private func rasterize(_ source: NSImage, pointSize: NSSize) -> NSImage {
+        let pixelW = Int(pointSize.width * 2)
+        let pixelH = Int(pointSize.height * 2)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelW,
+            pixelsHigh: pixelH,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            source.size = pointSize
+            return source
+        }
+        rep.size = pointSize
+
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            ctx.imageInterpolation = .high
+            source.draw(
+                in: NSRect(origin: .zero, size: pointSize),
+                from: .zero,
+                operation: .copy,
+                fraction: 1.0
+            )
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        let result = NSImage(size: pointSize)
+        result.addRepresentation(rep)
+        result.isTemplate = source.isTemplate
+        return result
     }
 
     private func symbolFallback(for entry: ProcessEntry) -> NSImage? {
