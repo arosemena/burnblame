@@ -59,12 +59,18 @@ Click any process to answer *"where did this come from and is it a mistake?"* (r
 
 ## Installation
 
-### Homebrew (Recommended once released)
+### Homebrew (Recommended)
 
 ```bash
 brew tap arosemena/burnblame https://github.com/arosemena/burnblame
 brew install --cask burnblame
 ```
+
+### Direct Download (Notarized `.dmg`)
+
+Download the latest signed & Apple-notarized Universal `.dmg` from [GitHub Releases](https://github.com/arosemena/burnblame/releases/latest) and drag **BurnBlame.app** into `/Applications`.
+
+> **Tip:** To start BurnBlame automatically when you log in, open **System Settings → General → Login Items & Extensions** and add `BurnBlame.app`.
 
 ### Requirements (Build from Source)
 - **macOS 14.0 (Sonoma)** or later (Apple Silicon or Intel)
