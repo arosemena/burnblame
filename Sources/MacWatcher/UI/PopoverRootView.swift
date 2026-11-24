@@ -45,11 +45,6 @@ public struct PopoverRootView: View {
             ThermalHeroHeaderView(engine: engine)
             Divider().opacity(0.45)
 
-            if let activeEvent = engine.thermalEvents.first(where: \.isOngoing),
-               let top = activeEvent.culprits.first {
-                activeHeatBanner(event: activeEvent, topCulprit: top)
-            }
-
             windowAndSearchBar
 
             if engine.selectedWindow == .events {

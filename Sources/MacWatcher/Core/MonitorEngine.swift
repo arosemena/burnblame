@@ -467,9 +467,9 @@ public final class MonitorEngine {
         let processSampler = self.processSampler
         workerQueue.async { [weak self] in
             _ = cpuSampler.sample()
-            let gpuSnap = gpuSampler.sample(scanPerProcess: false)
+            let gpuSnap = gpuSampler.sample()
             let smcSnap = smcSampler.sample()
-            _ = processSampler.sample(maxResults: 40, includeIdle: false)
+            _ = processSampler.sample(maxResults: 28, includeIdle: false)
             Task { @MainActor [weak self] in
                 self?.gpu = gpuSnap
                 self?.hardwareThermal = smcSnap
@@ -525,8 +525,6 @@ public final class MonitorEngine {
         let processSampler = self.processSampler
         let threshold = self.alertThresholdPercent
         let isOpen = self.isPopoverOpen
-        let scanGPUClients = isOpen && (self.backgroundTickCounter % 2 == 0)
-        self.backgroundTickCounter += 1
         let currentThermal = ThermalLevel(state: ProcessInfo.processInfo.thermalState)
 
         workerQueue.async { [weak self] in
@@ -544,12 +542,13 @@ public final class MonitorEngine {
             var procResult: ProcessSampler.SampleResult? = nil
 
             if shouldRunHeavySensors {
-                gpuSnap = gpuSampler.sample(scanPerProcess: scanGPUClients)
+                gpuSnap = gpuSampler.sample()
                 smcSnap = smcSampler.sample()
+                let expectedCoreCPU = cpuSnap.total * Double(cpuSnap.coreCount)
                 let sampled = processSampler.sample(
                     maxResults: isOpen ? 28 : 20,
                     includeIdle: isOpen,
-                    gpuDeltas: gpuSnap?.processGPUDeltaSeconds ?? [:]
+                    expectedTotalCoreCPU: expectedCoreCPU
                 )
                 IconCache.shared.prefetch(entries: sampled.processes)
                 procResult = sampled

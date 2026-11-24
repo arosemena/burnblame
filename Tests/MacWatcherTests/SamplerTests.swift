@@ -119,7 +119,7 @@ final class SamplerTests: XCTestCase {
         XCTAssertEqual(groups[1].dominantSource, .disk)
 
         // Benchmark all samplers gracefully
-        let gpu = GPUSampler().sample(scanPerProcess: false)
+        let gpu = GPUSampler().sample()
         let smc = SMCSampler().sample()
         XCTAssertGreaterThanOrEqual(gpu.deviceUtilizationPercent, 0)
         XCTAssertGreaterThanOrEqual(smc.sampleDurationMs, 0)

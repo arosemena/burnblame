@@ -51,6 +51,8 @@ public final class ProcessSampler: @unchecked Sendable {
     private var metadataCache: [pid_t: CachedMetadata] = [:]
     private var recentlyExited: [ExitedCulprit] = []
     private var lastSampleMonotonicNs: UInt64?
+    private var lastRootPSSampleEpoch: TimeInterval = 0
+    private var cachedRootProcs: [pid_t: (ppid: pid_t, uid: uid_t, cpu: Double, rssBytes: UInt64, name: String)] = [:]
     private var pidBuffer: [pid_t] = Array(repeating: 0, count: 1024)
 
     private let timebaseNumer: UInt64
@@ -92,7 +94,7 @@ public final class ProcessSampler: @unchecked Sendable {
     public func sample(
         maxResults: Int = 60,
         includeIdle: Bool = true,
-        gpuDeltas: [pid_t: Double] = [:]
+        expectedTotalCoreCPU: Double = 0
     ) -> SampleResult {
         let tStart = CFAbsoluteTimeGetCurrent()
         let nowMonotonic = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
@@ -151,6 +153,8 @@ public final class ProcessSampler: @unchecked Sendable {
         rawProcs.reserveCapacity(pidCount)
 
         var selfCPU: Double = 0.0
+        var observedUserCPUSum: Double = 0.0
+        var unreadablePIDs = Set<pid_t>()
         var totalHeat1mScore: Double = 0.0
         var totalHeat5mScore: Double = 0.0
         var totalCPUHeat1m: Double = 0.0
@@ -176,7 +180,7 @@ public final class ProcessSampler: @unchecked Sendable {
                 let totalTicks = ptinfo.pti_total_user &+ ptinfo.pti_total_system
                 let totalNs = machTicksToNanoseconds(totalTicks)
                 let startSec = pbsd.pbi_start_tvsec
-                let gpuDelta = gpuDeltas[pid] ?? 0.0
+                let gpuDelta = 0.0
 
                 var cpuPct: Double = 0.0
                 var deltaSec: Double = 0.0
@@ -254,6 +258,7 @@ public final class ProcessSampler: @unchecked Sendable {
                 if pid == currentPID {
                     selfCPU = cpuPct
                 }
+                observedUserCPUSum += cpuPct
 
                 let runState = ProcessRunState(bsdStatus: pbsd.pbi_status)
 
@@ -280,12 +285,87 @@ public final class ProcessSampler: @unchecked Sendable {
                     disk5m: sums.disk5m
                 ))
             } else {
+                unreadablePIDs.insert(pid)
                 let bsdRet = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsdOnly, bsdOnlySize)
                 if bsdRet == bsdOnlySize {
                     let rawName = extractProcessName(from: bsdOnly)
                     rawNamesByPID[pid] = rawName
                 }
             }
+        }
+
+        // On-demand root/system process attribution:
+        // Only runs `/bin/ps` (rate-limited to >= 3.5s) when whole-Mac CPU exceeds readable user processes
+        // by >= 20% per-core, so WindowServer / mds_stores / kernel_task are caught with zero idle cost!
+        let elapsedSec = elapsedNs.map { Double($0) / 1_000_000_000.0 } ?? 0.0
+        if !unreadablePIDs.isEmpty && (expectedTotalCoreCPU - observedUserCPUSum) >= 20.0 {
+            if nowEpoch - lastRootPSSampleEpoch >= 3.5 {
+                lastRootPSSampleEpoch = nowEpoch
+                cachedRootProcs = fetchHotRootProcessesViaPS(unreadablePIDs: unreadablePIDs)
+            }
+        } else if nowEpoch - lastRootPSSampleEpoch >= 10.0 {
+            cachedRootProcs.removeAll(keepingCapacity: true)
+        }
+
+        for (pid, rp) in cachedRootProcs where alivePIDs.contains(pid) {
+            let deltaSec = elapsedSec > 0 ? (rp.cpu / 100.0) * elapsedSec : 0.0
+            let prev = previousSamples[pid]
+            var ledger = prev?.heatLedger ?? []
+            if deltaSec >= 0.004 {
+                ledger.append(HeatSample(timestamp: nowEpoch, cpuSeconds: deltaSec, gpuSeconds: 0, diskBytes: 0))
+            }
+            if let firstValid = ledger.firstIndex(where: { $0.timestamp >= cutoff5m }) {
+                if firstValid > 0 { ledger.removeFirst(firstValid) }
+            } else if !ledger.isEmpty {
+                ledger.removeAll(keepingCapacity: false)
+            }
+            let sums = sumLedger(ledger, cutoff1m: cutoff1m)
+            totalCPUHeat1m += sums.cpu1m
+            totalHeat1mScore += sums.score1m
+            totalHeat5mScore += sums.score5m
+
+            var hist = prev?.history ?? []
+            hist.append(rp.cpu)
+            if hist.count > maxHistoryPoints { hist.removeFirst(hist.count - maxHistoryPoints) }
+            let peak = max(prev?.peakCPU ?? 0, rp.cpu)
+            let highSince: Date? = rp.cpu >= sustainedThresholdCPU ? (prev?.highCPUSince ?? nowDate) : nil
+
+            previousSamples[pid] = PreviousSample(
+                startTimeSec: 0,
+                totalTimeNs: 0,
+                lastDiskIOBytes: nil,
+                peakCPU: peak,
+                history: hist,
+                highCPUSince: highSince,
+                heatLedger: ledger,
+                lastRawName: rp.name,
+                lastPPID: rp.ppid,
+                lastUID: rp.uid,
+                lastMemoryBytes: rp.rssBytes
+            )
+
+            rawProcs.append(RawProc(
+                pid: pid,
+                ppid: rp.ppid,
+                uid: rp.uid,
+                rawName: rp.name,
+                startTimeSec: 0,
+                cpuPercent: rp.cpu,
+                peakCPU: peak,
+                history: hist,
+                residentBytes: rp.rssBytes,
+                threadCount: 0,
+                state: .running,
+                highCPUSince: highSince,
+                niceValue: 0,
+                totalCPUTimeSeconds: sums.cpu5m,
+                cpuHeat1m: sums.cpu1m,
+                cpuHeat5m: sums.cpu5m,
+                gpuHeat1m: 0,
+                gpuHeat5m: 0,
+                disk1m: 0,
+                disk5m: 0
+            ))
         }
 
         // Capture exited culprits that burned significant heat before exiting
@@ -483,6 +563,48 @@ public final class ProcessSampler: @unchecked Sendable {
         let s1 = c1 + g1 * 1.5 + Double(d1) / 200_000_000.0
         let s5 = c5 + g5 * 1.5 + Double(d5) / 200_000_000.0
         return (c1, c5, g1, g5, d1, d5, s1, s5)
+    }
+
+    private func fetchHotRootProcessesViaPS(
+        unreadablePIDs: Set<pid_t>
+    ) -> [pid_t: (ppid: pid_t, uid: uid_t, cpu: Double, rssBytes: UInt64, name: String)] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-Arc", "-o", "pid=,ppid=,uid=,pcpu=,rss=,comm="]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return [:]
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let output = String(data: data, encoding: .utf8) else { return [:] }
+
+        var found: [pid_t: (ppid: pid_t, uid: uid_t, cpu: Double, rssBytes: UInt64, name: String)] = [:]
+        for line in output.split(separator: "\n") {
+            let parts = line.split(maxSplits: 5, omittingEmptySubsequences: true, whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count >= 6,
+                  let pid = pid_t(parts[0]),
+                  let ppid = pid_t(parts[1]),
+                  let uid = uid_t(parts[2]),
+                  let cpu = Double(parts[3]),
+                  let rssKB = UInt64(parts[4])
+            else { continue }
+
+            // ps -r sorts by CPU descending; stop as soon as we hit idle processes (< 1%)
+            if cpu < 1.0 { break }
+            guard unreadablePIDs.contains(pid) else { continue }
+
+            let name = String(parts[5]).trimmingCharacters(in: .whitespaces)
+            found[pid] = (ppid: ppid, uid: uid, cpu: cpu, rssBytes: rssKB * 1024, name: name)
+        }
+        return found
     }
 
     private func fetchAllPIDs() -> Int {

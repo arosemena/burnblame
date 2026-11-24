@@ -190,6 +190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.isPopoverOpen = true
         panel.orderFrontRegardless()
         panel.makeKey()
+        // Prevent the search TextField from auto-focusing with a blinking cursor on open
+        panel.makeFirstResponder(nil)
+        DispatchQueue.main.async { [weak self] in
+            self?.panel.makeFirstResponder(nil)
+        }
         installDismissMonitors()
     }
 
