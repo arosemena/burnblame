@@ -65,7 +65,6 @@ public struct ProcessRowView: View {
                         Text(Formatters.cpu(entry.cpuPercent))
                             .font(.system(size: 12.5, weight: .bold, design: .monospaced))
                             .foregroundStyle(entry.cpuPercent >= 12 ? Theme.color(forCPUPercent: entry.cpuPercent) : .primary)
-                            .contentTransition(.numericText())
                     }
 
                     HStack(spacing: 6) {
@@ -102,9 +101,7 @@ public struct ProcessRowView: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.12)) {
-                isHovered = hovering
-            }
+            isHovered = hovering
         }
     }
 

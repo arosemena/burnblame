@@ -1,5 +1,58 @@
 import Foundation
 
+public enum ThermalLevel: Int, Comparable, Sendable, Equatable {
+    case cool = 0       // .nominal
+    case warm = 1       // .fair
+    case hot = 2        // .serious
+    case critical = 3   // .critical
+
+    public init(state: ProcessInfo.ThermalState) {
+        switch state {
+        case .nominal: self = .cool
+        case .fair: self = .warm
+        case .serious: self = .hot
+        case .critical: self = .critical
+        @unknown default: self = .cool
+        }
+    }
+
+    public static func < (lhs: ThermalLevel, rhs: ThermalLevel) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    public var label: String {
+        switch self {
+        case .cool: return "Cool"
+        case .warm: return "Warm"
+        case .hot: return "Hot"
+        case .critical: return "Critical"
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .cool: return "thermometer.low"
+        case .warm: return "thermometer.medium"
+        case .hot: return "thermometer.high"
+        case .critical: return "flame.fill"
+        }
+    }
+}
+
+public enum HeatWindow: String, CaseIterable, Sendable {
+    case oneMinute = "1m Heat"
+    case fiveMinutes = "5m Heat"
+    case events = "Heat Log"
+
+    public var durationSeconds: TimeInterval {
+        switch self {
+        case .oneMinute: return 60
+        case .fiveMinutes: return 300
+        case .events: return 60
+        }
+    }
+}
+
 public struct SystemCPUSnapshot: Sendable, Equatable {
     public let user: Double      // 0...100
     public let system: Double    // 0...100
@@ -25,6 +78,7 @@ public enum ProcessRunState: String, Sendable, Equatable {
     case sleeping = "Idle"
     case stopped = "Paused"
     case zombie = "Zombie"
+    case exited = "Exited"
     case unknown = "Unknown"
 
     init(bsdStatus: UInt32) {
@@ -63,12 +117,28 @@ public struct ProcessEntry: Identifiable, Sendable, Equatable {
     public let niceValue: Int32
     public let totalCPUTimeSeconds: Double
 
+    // Thermal / Heat accounting over rolling windows (CPU-seconds burned)
+    public let heat1mSeconds: Double
+    public let heat5mSeconds: Double
+    public let exitedAt: Date?
+
     public var isPaused: Bool {
         state == .stopped
     }
 
+    public var isExited: Bool {
+        state == .exited || exitedAt != nil
+    }
+
+    public func heatSeconds(for window: HeatWindow) -> Double {
+        switch window {
+        case .oneMinute, .events: return heat1mSeconds
+        case .fiveMinutes: return heat5mSeconds
+        }
+    }
+
     public var sustainedHighDuration: TimeInterval? {
-        guard let since = highCPUSince else { return nil }
+        guard let since = highCPUSince, !isExited else { return nil }
         let elapsed = Date().timeIntervalSince(since)
         return elapsed >= 5 ? elapsed : nil
     }
@@ -79,10 +149,68 @@ public struct ProcessEntry: Identifiable, Sendable, Equatable {
     }
 
     public var severity: CPUSeverity {
-        if cpuPercent >= 80 { return .critical }
-        if cpuPercent >= 35 { return .elevated }
-        if cpuPercent >= 12 { return .moderate }
+        if heat1mSeconds >= 45 || cpuPercent >= 80 { return .critical }
+        if heat1mSeconds >= 18 || cpuPercent >= 35 { return .elevated }
+        if heat1mSeconds >= 5 || cpuPercent >= 12 { return .moderate }
         return .calm
+    }
+}
+
+/// A logical app or process-family group that rolls up helpers & short-lived children
+/// so the user sees a stable, calm ranking of what is actually heating up the Mac.
+public struct HeatGroup: Identifiable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let bundlePath: String?
+    public let representative: ProcessEntry
+    public let members: [ProcessEntry]
+    public let heatSeconds: Double
+    public let heatSharePercent: Double
+    public let liveCPUPercent: Double
+    public let totalMemoryBytes: UInt64
+    public let isSystemGroup: Bool
+    public let activeCount: Int
+    public let exitedCount: Int
+
+    public var severity: CPUSeverity {
+        if heatSharePercent >= 35 || heatSeconds >= 45 { return .critical }
+        if heatSharePercent >= 18 || heatSeconds >= 18 { return .elevated }
+        if heatSharePercent >= 7 || heatSeconds >= 5 { return .moderate }
+        return .calm
+    }
+
+    /// Average cores saturated over the window (e.g., 60 CPU-sec in 60s = 1.0 core avg)
+    public func avgCores(windowSeconds: TimeInterval) -> Double {
+        guard windowSeconds > 0 else { return 0 }
+        return heatSeconds / windowSeconds
+    }
+}
+
+public struct ThermalCulpritSnapshot: Identifiable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let pid: pid_t
+    public let heatSeconds: Double
+    public let sharePercent: Double
+    public let executablePath: String?
+}
+
+/// Recorded automatically whenever macOS thermal state escalates or sustained high load occurs.
+public struct ThermalEvent: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let startedAt: Date
+    public var endedAt: Date?
+    public var peakThermalLevel: ThermalLevel
+    public var peakSystemCPU: Double
+    public var reason: String
+    public var culprits: [ThermalCulpritSnapshot]
+
+    public var isOngoing: Bool {
+        endedAt == nil
+    }
+
+    public var duration: TimeInterval {
+        (endedAt ?? Date()).timeIntervalSince(startedAt)
     }
 }
 

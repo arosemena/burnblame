@@ -14,6 +14,19 @@ public enum Theme {
         }
     }
 
+    public static func color(for thermal: ThermalLevel) -> Color {
+        switch thermal {
+        case .cool:
+            return Color(nsColor: .systemGreen)
+        case .warm:
+            return Color(nsColor: .systemOrange)
+        case .hot:
+            return Color(nsColor: .systemRed)
+        case .critical:
+            return Color(nsColor: .systemPink)
+        }
+    }
+
     public static func color(forCPUPercent cpu: Double) -> Color {
         if cpu >= 80 { return Color(nsColor: .systemRed) }
         if cpu >= 35 { return Color(nsColor: .systemOrange) }
@@ -41,6 +54,20 @@ public enum Formatters {
             return String(format: "%.1f%%", value)
         } else {
             return "0.0%"
+        }
+    }
+
+    public static func heatSeconds(_ seconds: Double) -> String {
+        if seconds >= 120 {
+            let mins = Int(seconds) / 60
+            let secs = Int(seconds) % 60
+            return "\(mins)m \(secs)s"
+        } else if seconds >= 10 {
+            return String(format: "%.0fs", seconds)
+        } else if seconds >= 0.1 {
+            return String(format: "%.1fs", seconds)
+        } else {
+            return "<0.1s"
         }
     }
 
@@ -74,6 +101,27 @@ public enum Formatters {
         } else {
             return "\(secs)s"
         }
+    }
+
+    public static func relativeTime(_ date: Date) -> String {
+        let elapsed = max(0, Date().timeIntervalSince(date))
+        if elapsed < 60 {
+            return "\(Int(elapsed))s ago"
+        } else if elapsed < 3600 {
+            return "\(Int(elapsed / 60))m ago"
+        } else {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            formatter.dateStyle = .none
+            return formatter.string(from: date)
+        }
+    }
+
+    public static func clockTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
     }
 
     public static func shortenedPath(_ path: String) -> String {

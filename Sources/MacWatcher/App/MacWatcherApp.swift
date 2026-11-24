@@ -14,10 +14,16 @@ struct MacWatcherEntry {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private struct RenderedStatusState: Equatable {
+        let symbolName: String
+        let severity: CPUSeverity
+        let title: String
+    }
+
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var engine: MonitorEngine!
-    private var statusUpdateTimer: Timer?
+    private var lastRenderedStatus: RenderedStatusState?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Stay strictly in the menu bar — no Dock icon or app switcher clutter
@@ -25,13 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         engine = MonitorEngine()
 
-        // Configure popover
+        // Configure popover: animates = false eliminates AppKit's ~200ms close-animation dead window
+        // where clicks on the status bar icon get silently ignored, and makes opening instantaneous.
+        let hostingController = NSHostingController(rootView: PopoverRootView(engine: engine))
+        // Pre-warm SwiftUI hosting view so the very first click has zero cold-start layout lag
+        _ = hostingController.view
+
         let pop = NSPopover()
-        pop.contentSize = NSSize(width: 400, height: 540)
+        pop.contentSize = NSSize(width: 406, height: 550)
         pop.behavior = .transient
-        pop.animates = true
+        pop.animates = false
         pop.delegate = self
-        pop.contentViewController = NSHostingController(rootView: PopoverRootView(engine: engine))
+        pop.contentViewController = hostingController
         self.popover = pop
 
         // Configure status bar item
@@ -39,17 +50,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            // Fire on mouseDown for instant response without waiting for release or losing clicks on redraw
+            button.sendAction(on: [.leftMouseDown, .rightMouseDown])
             updateStatusBarButton()
         }
 
-        // Observe engine changes to update the menu bar label smoothly
         observeEngine()
     }
 
     private func observeEngine() {
         withObservationTracking {
             _ = engine.systemCPU
+            _ = engine.thermalLevel
             _ = engine.showPercentInMenuBar
             _ = engine.menuBarSeverity
             _ = engine.isMonitoringPaused
@@ -67,12 +79,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let severity = engine.menuBarSeverity
         let symbolName: String = {
             if engine.isMonitoringPaused { return "pause.circle" }
+            if engine.thermalLevel >= .hot { return "flame.fill" }
+            if engine.thermalLevel == .warm { return "thermometer.high" }
             switch severity {
             case .critical: return "flame.fill"
-            case .elevated: return "cpu.fill"
-            case .moderate, .calm: return "cpu"
+            case .elevated: return "thermometer.medium"
+            case .moderate, .calm: return "thermometer.low"
             }
         }()
+
+        let titleText = engine.showPercentInMenuBar
+            ? " \(Int(engine.systemCPU.total.rounded()))%"
+            : ""
+
+        let nextState = RenderedStatusState(
+            symbolName: symbolName,
+            severity: severity,
+            title: titleText
+        )
+        // Skip redundant button redraws when displayed text/icon didn't actually change
+        guard nextState != lastRenderedStatus else { return }
+        lastRenderedStatus = nextState
 
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
         if let baseImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: "MacWatcher")?
@@ -89,13 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
-        if engine.showPercentInMenuBar {
-            let pct = Int(engine.systemCPU.total.rounded())
+        if !titleText.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: severity == .critical ? .bold : .medium),
                 .foregroundColor: Theme.nsColor(for: severity)
             ]
-            button.attributedTitle = NSAttributedString(string: " \(pct)%", attributes: attrs)
+            button.attributedTitle = NSAttributedString(string: titleText, attributes: attrs)
         } else {
             button.title = ""
         }
@@ -104,21 +130,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func togglePopover(_ sender: AnyObject?) {
         guard let button = statusItem.button else { return }
 
-        if let event = NSApp.currentEvent, event.type == .rightMouseUp {
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseDown || event.type == .rightMouseUp {
             showContextMenu(from: button)
             return
         }
 
         if popover.isShown {
-            popover.performClose(sender)
+            popover.close()
         } else {
-            NSApp.activate(ignoringOtherApps: true)
+            // Show immediately on the current frame; activate lazily so WindowServer focus switch doesn't stall open
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            DispatchQueue.main.async { [weak self] in
+                NSApp.activate(ignoringOtherApps: true)
+                self?.popover.contentViewController?.view.window?.makeKey()
+            }
         }
     }
 
     private func showContextMenu(from button: NSStatusBarButton) {
+        if popover.isShown {
+            popover.close()
+        }
+
         let menu = NSMenu()
         let pauseTitle = engine.isMonitoringPaused ? "Resume Monitoring" : "Pause Monitoring"
         let pauseItem = NSMenuItem(title: pauseTitle, action: #selector(togglePause), keyEquivalent: "p")

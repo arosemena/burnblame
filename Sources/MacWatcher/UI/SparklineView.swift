@@ -89,7 +89,7 @@ public struct SparklineView: View {
     }
 }
 
-/// Compact capsule meter bar for per-process CPU usage.
+/// Compact capsule meter bar for per-process CPU usage (zero GeometryReader overhead).
 public struct CPUMeterBar: View {
     public let cpuPercent: Double
     public let coreCount: Int
@@ -100,29 +100,18 @@ public struct CPUMeterBar: View {
     }
 
     private var fillFraction: CGFloat {
-        // Scale: 100% (1 full core) fills ~75% of the bar, 200%+ fills 100%
-        let scaled = min(1.0, max(0.02, cpuPercent / 120.0))
-        return CGFloat(scaled)
+        // Scale: 100% (1 full core) fills ~83% of the bar, 120%+ fills 100%
+        CGFloat(min(1.0, max(0.04, cpuPercent / 120.0)))
     }
 
     public var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.primary.opacity(0.08))
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Theme.color(forCPUPercent: cpuPercent).opacity(0.75),
-                                Theme.color(forCPUPercent: cpuPercent)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: max(3, geo.size.width * fillFraction))
-            }
+        let tint = Theme.color(forCPUPercent: cpuPercent)
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(Color.primary.opacity(0.08))
+            Capsule()
+                .fill(tint)
+                .scaleEffect(x: fillFraction, y: 1.0, anchor: .leading)
         }
         .frame(height: 4)
     }

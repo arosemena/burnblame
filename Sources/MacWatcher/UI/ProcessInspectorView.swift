@@ -213,6 +213,7 @@ public struct ProcessInspectorView: View {
             case .sleeping: return .secondary
             case .stopped: return .purple
             case .zombie: return .red
+            case .exited: return .orange
             case .unknown: return .secondary
             }
         }()
