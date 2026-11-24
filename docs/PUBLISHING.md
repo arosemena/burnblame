@@ -67,8 +67,8 @@ xcrun notarytool store-credentials "burnblame-notary" \
 
 ## 4. Publish to the Mac App Store
 
-1. In [App Store Connect](https://appstoreconnect.apple.com), register a new macOS app with Bundle ID **`com.burnblame.app`**.
-2. Create & download a **Mac App Store Distribution Provisioning Profile** for `com.burnblame.app` from developer.apple.com.
+1. In [App Store Connect](https://appstoreconnect.apple.com), register a new macOS app with Bundle ID **`mx.lotus.burnblame`**.
+2. Create & download a **Mac App Store Distribution Provisioning Profile** for `mx.lotus.burnblame` from developer.apple.com.
 3. Build and sign the sandboxed `.pkg`:
    ```bash
    PROVISIONING_PROFILE=/path/to/BurnBlame_MAS.provisionprofile \

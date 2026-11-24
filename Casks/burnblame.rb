@@ -12,6 +12,6 @@ cask "burnblame" do
   app "BurnBlame.app"
 
   zap trash: [
-    "~/Library/Preferences/com.burnblame.app.plist",
+    "~/Library/Preferences/mx.lotus.burnblame.plist",
   ]
 end
