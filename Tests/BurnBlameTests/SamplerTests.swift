@@ -1,5 +1,5 @@
 import XCTest
-@testable import MacWatcher
+@testable import BurnBlame
 
 final class SamplerTests: XCTestCase {
     func testSystemCPUSamplerReturnsValidRange() {

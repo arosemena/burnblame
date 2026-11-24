@@ -3,7 +3,7 @@ import Observation
 import SwiftUI
 
 @main
-struct MacWatcherEntry {
+struct BurnBlameEntry {
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -132,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastRenderedStatus = nextState
 
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        if let baseImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: "MacWatcher")?
+        if let baseImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: "BurnBlame")?
             .withSymbolConfiguration(config) {
             if severity == .elevated || severity == .critical {
                 let tinted = baseImage.withSymbolConfiguration(
@@ -266,7 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit MacWatcher", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit BurnBlame", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 

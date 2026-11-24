@@ -450,7 +450,7 @@ private struct FooterBarView: View {
                 Text(
                     engine.isMonitoringPaused
                         ? "Paused"
-                        : String(format: "Watcher: %.1f%% · %.1fms/tick", engine.selfCPUPercent, engine.telemetry.totalTickMs)
+                        : String(format: "BurnBlame: %.1f%% · %.1fms/tick", engine.selfCPUPercent, engine.telemetry.totalTickMs)
                 )
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -492,7 +492,7 @@ private struct FooterBarView: View {
                     .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
-            .help("Quit MacWatcher")
+            .help("Quit BurnBlame")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -500,7 +500,7 @@ private struct FooterBarView: View {
 
     private var settingsPopover: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("MacWatcher Settings")
+            Text("BurnBlame Settings")
                 .font(.system(size: 12.5, weight: .bold))
 
             Toggle("Show CPU % in menu bar", isOn: $engine.showPercentInMenuBar)

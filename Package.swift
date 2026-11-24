@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "MacWatcher",
+    name: "BurnBlame",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "MacWatcher", targets: ["MacWatcher"])
+        .executable(name: "BurnBlame", targets: ["BurnBlame"])
     ],
     targets: [
         .executableTarget(
-            name: "MacWatcher",
-            path: "Sources/MacWatcher",
+            name: "BurnBlame",
+            path: "Sources/BurnBlame",
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),
@@ -20,9 +20,9 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "MacWatcherTests",
-            dependencies: ["MacWatcher"],
-            path: "Tests/MacWatcherTests"
+            name: "BurnBlameTests",
+            dependencies: ["BurnBlame"],
+            path: "Tests/BurnBlameTests"
         )
     ]
 )

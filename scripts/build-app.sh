@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="MacWatcher"
+APP_NAME="BurnBlame"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -30,7 +30,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>
-    <string>com.macwatcher.app</string>
+    <string>com.burnblame.app</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -51,7 +51,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
 </plist>
 EOF
 
-# Ad-hoc sign so macOS Gatekeeper / local launch runs smoothly
+# Ad-hoc sign so macOS local launch runs smoothly
 codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
 
 echo "Built $APP_BUNDLE"

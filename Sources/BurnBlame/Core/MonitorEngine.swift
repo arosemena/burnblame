@@ -88,8 +88,8 @@ public final class MonitorEngine {
     private let smcSampler = SMCSampler()
     private let processSampler = ProcessSampler()
     private let inspector = ProcessInspector()
-    private let workerQueue = DispatchQueue(label: "com.macwatcher.sampler", qos: .utility)
-    private let inspectorQueue = DispatchQueue(label: "com.macwatcher.inspector", qos: .userInitiated)
+    private let workerQueue = DispatchQueue(label: "com.burnblame.sampler", qos: .utility)
+    private let inspectorQueue = DispatchQueue(label: "com.burnblame.inspector", qos: .userInitiated)
 
     private var timer: Timer?
     private var backgroundTickCounter: Int = 0
