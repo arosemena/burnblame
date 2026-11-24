@@ -1,15 +1,15 @@
 import SwiftUI
 
-/// Calm, grouped row representing an application or process family's contribution to system heat.
-/// Single-process groups inspect immediately; multi-process groups expand to reveal guilty helpers/children.
+/// High-performance grouped row for 120Hz smooth scrolling:
+/// - Zero per-row `.onHover` tracking areas (prevents mid-scroll state churn).
+/// - Minimal layer tree (no redundant stroke overlays on calm rows).
+/// - Pre-cached O(1) icon lookup.
 public struct HeatGroupRowView: View {
     public let group: HeatGroup
     public let window: HeatWindow
     public let isExpanded: Bool
     public let onToggleExpand: () -> Void
     public let onInspect: (ProcessEntry) -> Void
-
-    @State private var isHovered = false
 
     public init(
         group: HeatGroup,
@@ -35,7 +35,6 @@ public struct HeatGroupRowView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Main Group Row
             Button {
                 if isMultiMember {
                     onToggleExpand()
@@ -115,7 +114,6 @@ public struct HeatGroupRowView: View {
 
                     Spacer(minLength: 4)
 
-                    // Right: Heat Share % + proportional bar
                     VStack(alignment: .trailing, spacing: 3.5) {
                         Text(group.heatSharePercent >= 0.5 ? String(format: "%.0f%%", group.heatSharePercent) : "<1%")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
@@ -127,9 +125,9 @@ public struct HeatGroupRowView: View {
 
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(isHovered || isExpanded ? Color.primary.opacity(0.8) : Color.secondary.opacity(0.4))
+                        .foregroundStyle(isExpanded ? Color.primary.opacity(0.8) : Color.secondary.opacity(0.45))
                         .rotationEffect(.degrees(isMultiMember && isExpanded ? 90 : 0))
-                        .animation(.snappy(duration: 0.18), value: isExpanded)
+                        .animation(.snappy(duration: 0.16), value: isExpanded)
                         .frame(width: 10)
                 }
                 .padding(.horizontal, 10)
@@ -138,7 +136,6 @@ public struct HeatGroupRowView: View {
             }
             .buttonStyle(.plain)
 
-            // Expanded Child Processes
             if isExpanded && isMultiMember {
                 Divider().opacity(0.35).padding(.horizontal, 10)
 
@@ -155,25 +152,16 @@ public struct HeatGroupRowView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(isHovered || isExpanded ? Color.primary.opacity(0.07) : Color.primary.opacity(0.025))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(
-                    group.severity == .critical
-                        ? Color.red.opacity(isHovered ? 0.45 : 0.25)
-                        : Color.primary.opacity(isHovered || isExpanded ? 0.12 : 0.04),
-                    lineWidth: 0.75
+                .fill(
+                    isExpanded
+                        ? Color.primary.opacity(0.065)
+                        : (group.severity == .critical ? Color.red.opacity(0.08) : Color.primary.opacity(0.032))
                 )
         )
-        .onHover { hovering in
-            isHovered = hovering
-        }
     }
 
     private func childRow(_ member: ProcessEntry) -> some View {
@@ -220,7 +208,8 @@ public struct HeatGroupRowView: View {
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.03)))
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.035)))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(member.isExited)
@@ -229,20 +218,23 @@ public struct HeatGroupRowView: View {
     @ViewBuilder
     private var groupIcon: some View {
         let nsImage = IconCache.shared.icon(for: group.representative)
-        ZStack {
-            if group.bundlePath == nil {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(accentColor.opacity(0.14))
-                    .frame(width: 28, height: 28)
-            }
+        if group.bundlePath != nil {
             Image(nsImage: nsImage)
                 .resizable()
-                .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
-                .frame(width: group.bundlePath != nil ? 28 : 16, height: group.bundlePath != nil ? 28 : 16)
-                .foregroundStyle(accentColor)
+                .frame(width: 26, height: 26)
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(accentColor.opacity(0.14))
+                    .frame(width: 26, height: 26)
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 15, height: 15)
+                    .foregroundStyle(accentColor)
+            }
         }
-        .frame(width: 28, height: 28)
     }
 
     private func badge(_ text: String, color: Color) -> some View {

@@ -2,8 +2,8 @@ import SwiftUI
 
 public struct PopoverRootView: View {
     @Bindable public var engine: MonitorEngine
-    @State private var showingSettings = false
     @State private var expandedGroupIDs: Set<String> = []
+    @State private var showQuietApps = false
 
     public init(engine: MonitorEngine) {
         self.engine = engine
@@ -39,11 +39,10 @@ public struct PopoverRootView: View {
         .animation(.easeOut(duration: 0.16), value: engine.toast)
     }
 
-    // MARK: - Overview View
-
     private var overviewView: some View {
         VStack(spacing: 0) {
-            thermalHeroHeader
+            // Isolated child view so CPU/SMC/sparkline ticks NEVER invalidate the ScrollView below!
+            ThermalHeroHeaderView(engine: engine)
             Divider().opacity(0.45)
 
             if let activeEvent = engine.thermalEvents.first(where: \.isOngoing),
@@ -58,143 +57,17 @@ public struct PopoverRootView: View {
                     engine.selectProcessByPID(pid)
                 }
             } else {
-                heatGroupList
+                HeatGroupListSection(
+                    engine: engine,
+                    expandedGroupIDs: $expandedGroupIDs,
+                    showQuietApps: $showQuietApps
+                )
             }
 
             Divider().opacity(0.45)
-            footerBar
+            FooterBarView(engine: engine)
         }
     }
-
-    // MARK: - Thermal Hero Header
-
-    private var thermalHeroHeader: some View {
-        let thermalColor = Theme.color(for: engine.thermalLevel)
-        let hw = engine.hardwareThermal
-
-        return VStack(spacing: 8) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    // Thermal State Pill + Power Watts
-                    HStack(spacing: 6) {
-                        HStack(spacing: 4) {
-                            Image(systemName: engine.thermalLevel.symbolName)
-                                .font(.system(size: 10.5, weight: .bold))
-                            Text(engine.thermalLevel.label)
-                                .font(.system(size: 10.5, weight: .bold))
-                        }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2.5)
-                        .background(Capsule().fill(thermalColor.opacity(0.16)))
-                        .foregroundStyle(thermalColor)
-
-                        if let watts = hw.systemPowerWatts {
-                            HStack(spacing: 2.5) {
-                                Image(systemName: "bolt.fill")
-                                    .font(.system(size: 9))
-                                Text(String(format: "%.1fW", watts))
-                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            }
-                            .foregroundStyle(watts >= 30 ? .orange : .secondary)
-                        }
-                    }
-
-                    // Live CPU + GPU numbers
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text(String(format: "%.0f%%", engine.systemCPU.total))
-                                .font(.system(size: 24, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.color(for: engine.menuBarSeverity))
-                                .contentTransition(.numericText())
-                            Text("CPU")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text(String(format: "%.0f%%", engine.gpu.deviceUtilizationPercent))
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(engine.gpu.deviceUtilizationPercent >= 40 ? .indigo : .primary.opacity(0.8))
-                            Text("GPU")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Spacer(minLength: 4)
-
-                SparklineView(
-                    values: engine.cpuHistory,
-                    maxValue: 100.0,
-                    accentColor: Theme.color(for: engine.menuBarSeverity)
-                )
-                .frame(width: 152, height: 50)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.primary.opacity(0.04))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.75)
-                )
-            }
-
-            // Hardware Sensor Strip (Real °C + Fan RPM + 1m Avg)
-            HStack(spacing: 6) {
-                if let cpuC = hw.cpuTempC {
-                    sensorPill(
-                        icon: "thermometer.medium",
-                        label: "CPU",
-                        value: "\(Int(cpuC.rounded()))°C",
-                        tint: cpuC >= 85 ? .red : (cpuC >= 70 ? .orange : .secondary)
-                    )
-                }
-                if let gpuC = hw.gpuTempC {
-                    sensorPill(
-                        icon: "square.stack.3d.up.fill",
-                        label: "GPU",
-                        value: "\(Int(gpuC.rounded()))°C",
-                        tint: gpuC >= 80 ? .red : (gpuC >= 65 ? .orange : .secondary)
-                    )
-                }
-                if let rpm = hw.peakFanRPM {
-                    sensorPill(
-                        icon: "fanblades.fill",
-                        label: rpm >= 100 ? "\(Int(rpm.rounded())) RPM" : "Fans off",
-                        value: "",
-                        tint: rpm >= 2500 ? .orange : (rpm >= 100 ? .cyan : .secondary)
-                    )
-                }
-                Spacer(minLength: 0)
-                Text(String(format: "1m avg %.0f%%", engine.avgLoad1mPercent))
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-    }
-
-    private func sensorPill(icon: String, label: String, value: String, tint: Color) -> some View {
-        HStack(spacing: 3.5) {
-            Image(systemName: icon)
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(tint)
-            Text(value.isEmpty ? label : "\(label) \(value)")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundStyle(tint == .secondary ? .primary.opacity(0.85) : tint)
-        }
-        .padding(.horizontal, 6.5)
-        .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
-    }
-
-    // MARK: - Active Heat Banner
 
     private func activeHeatBanner(event: ThermalEvent, topCulprit: ThermalCulpritSnapshot) -> some View {
         Button {
@@ -234,8 +107,6 @@ public struct PopoverRootView: View {
         }
         .buttonStyle(.plain)
     }
-
-    // MARK: - Window Tabs & Search
 
     private var windowAndSearchBar: some View {
         VStack(spacing: 7) {
@@ -300,13 +171,183 @@ public struct PopoverRootView: View {
         .padding(.bottom, 6)
     }
 
-    // MARK: - Grouped Heat List (Hover-Frozen!)
+    private func toastBanner(_ toast: ActionToast) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: toast.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 11.5))
+                .foregroundStyle(toast.isError ? .red : .green)
+            Text(toast.message)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(toast.isError ? Color.red.opacity(0.4) : Color.primary.opacity(0.12), lineWidth: 0.75)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+    }
+}
 
-    private var heatGroupList: some View {
-        let items = engine.filteredHeatGroups
+// MARK: - Isolated Hero Header Subview
+
+private struct ThermalHeroHeaderView: View {
+    let engine: MonitorEngine
+
+    var body: some View {
+        let thermalColor = Theme.color(for: engine.thermalLevel)
+        let hw = engine.hardwareThermal
+
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        HStack(spacing: 4) {
+                            Image(systemName: engine.thermalLevel.symbolName)
+                                .font(.system(size: 10.5, weight: .bold))
+                            Text(engine.thermalLevel.label)
+                                .font(.system(size: 10.5, weight: .bold))
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(Capsule().fill(thermalColor.opacity(0.16)))
+                        .foregroundStyle(thermalColor)
+
+                        if let watts = hw.systemPowerWatts {
+                            HStack(spacing: 2.5) {
+                                Image(systemName: "bolt.fill")
+                                    .font(.system(size: 9))
+                                Text(String(format: "%.1fW", watts))
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                            }
+                            .foregroundStyle(watts >= 30 ? .orange : .secondary)
+                        }
+                    }
+
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text(String(format: "%.0f%%", engine.systemCPU.total))
+                                .font(.system(size: 24, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.color(for: engine.menuBarSeverity))
+                            Text("CPU")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text(String(format: "%.0f%%", engine.gpu.deviceUtilizationPercent))
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(engine.gpu.deviceUtilizationPercent >= 40 ? .indigo : .primary.opacity(0.8))
+                            Text("GPU")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                SparklineView(
+                    values: engine.cpuHistory,
+                    maxValue: 100.0,
+                    accentColor: Theme.color(for: engine.menuBarSeverity)
+                )
+                .frame(width: 152, height: 50)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(0.04))
+                )
+            }
+
+            HStack(spacing: 6) {
+                if let cpuC = hw.cpuTempC {
+                    sensorPill(
+                        icon: "thermometer.medium",
+                        label: "CPU",
+                        value: "\(Int(cpuC.rounded()))°C",
+                        tint: cpuC >= 85 ? .red : (cpuC >= 70 ? .orange : .secondary)
+                    )
+                }
+                if let gpuC = hw.gpuTempC {
+                    sensorPill(
+                        icon: "square.stack.3d.up.fill",
+                        label: "GPU",
+                        value: "\(Int(gpuC.rounded()))°C",
+                        tint: gpuC >= 80 ? .red : (gpuC >= 65 ? .orange : .secondary)
+                    )
+                }
+                if let rpm = hw.peakFanRPM {
+                    sensorPill(
+                        icon: "fanblades.fill",
+                        label: rpm >= 100 ? "\(Int(rpm.rounded())) RPM" : "Fans off",
+                        value: "",
+                        tint: rpm >= 2500 ? .orange : (rpm >= 100 ? .cyan : .secondary)
+                    )
+                }
+                Spacer(minLength: 0)
+                Text(String(format: "1m avg %.0f%%", engine.avgLoad1mPercent))
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+    }
+
+    private func sensorPill(icon: String, label: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 3.5) {
+            Image(systemName: icon)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(value.isEmpty ? label : "\(label) \(value)")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(tint == .secondary ? .primary.opacity(0.85) : tint)
+        }
+        .padding(.horizontal, 6.5)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+    }
+}
+
+// MARK: - Isolated Scrollable Heat List Subview
+
+private struct HeatGroupListSection: View {
+    let engine: MonitorEngine
+    @Binding var expandedGroupIDs: Set<String>
+    @Binding var showQuietApps: Bool
+
+    var body: some View {
+        let allItems = engine.filteredHeatGroups
+        let isSearching = !engine.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        let significantItems: [HeatGroup]
+        let quietCount: Int
+        if isSearching || showQuietApps {
+            significantItems = allItems
+            quietCount = 0
+        } else {
+            let filtered = allItems.filter { group in
+                group.heatSharePercent >= 1.0
+                    || group.heatSeconds >= 0.35
+                    || group.liveCPUPercent >= 3.0
+                    || group.members.contains(where: \.isPaused)
+            }
+            // Always show at least the top 5 rows even on a completely idle Mac
+            if filtered.count >= 5 || allItems.count <= 5 {
+                significantItems = filtered.isEmpty ? Array(allItems.prefix(5)) : filtered
+            } else {
+                significantItems = Array(allItems.prefix(5))
+            }
+            quietCount = max(0, allItems.count - significantItems.count)
+        }
 
         return VStack(spacing: 0) {
-            // Subtle column header + hover-pin indicator
             HStack(spacing: 6) {
                 Text(engine.selectedWindow == .oneMinute ? "HEAT CULPRITS · LAST 1M" : "HEAT CULPRITS · LAST 5M")
                     .font(.system(size: 9, weight: .bold))
@@ -332,7 +373,7 @@ public struct PopoverRootView: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 4)
 
-            if items.isEmpty {
+            if significantItems.isEmpty {
                 VStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "checkmark.seal.fill")
@@ -349,13 +390,13 @@ public struct PopoverRootView: View {
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
                     LazyVStack(spacing: 5) {
-                        ForEach(items) { group in
+                        ForEach(significantItems) { group in
                             HeatGroupRowView(
                                 group: group,
                                 window: engine.selectedWindow,
                                 isExpanded: expandedGroupIDs.contains(group.id),
                                 onToggleExpand: {
-                                    withAnimation(.snappy(duration: 0.2)) {
+                                    withAnimation(.snappy(duration: 0.18)) {
                                         if expandedGroupIDs.contains(group.id) {
                                             expandedGroupIDs.remove(group.id)
                                         } else {
@@ -368,6 +409,21 @@ public struct PopoverRootView: View {
                                 }
                             )
                         }
+
+                        if !isSearching && (quietCount > 0 || showQuietApps) {
+                            Button {
+                                showQuietApps.toggle()
+                            } label: {
+                                Text(showQuietApps ? "Hide quiet apps (<1%)" : "Show \(quietCount) quiet apps (<1%)")
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 6)
+                                    .frame(maxWidth: .infinity)
+                                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.03)))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 2)
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.bottom, 10)
@@ -378,10 +434,15 @@ public struct PopoverRootView: View {
             }
         }
     }
+}
 
-    // MARK: - Footer
+// MARK: - Isolated Footer Subview
 
-    private var footerBar: some View {
+private struct FooterBarView: View {
+    @Bindable var engine: MonitorEngine
+    @State private var showingSettings = false
+
+    var body: some View {
         HStack(spacing: 8) {
             HStack(spacing: 5) {
                 Circle()
@@ -484,26 +545,5 @@ public struct PopoverRootView: View {
         }
         .padding(14)
         .frame(width: 250)
-    }
-
-    // MARK: - Toast
-
-    private func toastBanner(_ toast: ActionToast) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: toast.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 11.5))
-                .foregroundStyle(toast.isError ? .red : .green)
-            Text(toast.message)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(2)
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(
-            Capsule()
-                .strokeBorder(toast.isError ? Color.red.opacity(0.4) : Color.primary.opacity(0.12), lineWidth: 0.75)
-        )
-        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
     }
 }
