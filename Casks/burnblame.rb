@@ -1,6 +1,6 @@
 cask "burnblame" do
   version "1.0.0"
-  sha256 :no_check # Updated automatically by scripts/update-homebrew-cask.sh on release
+  sha256 "46139ff6134770515625ca1bf8188cb82381c5abeb493bd12af84c61033fa3e9"
 
   url "https://github.com/arosemena/burnblame/releases/download/v#{version}/BurnBlame-#{version}.dmg"
   name "BurnBlame"
