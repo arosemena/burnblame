@@ -65,6 +65,8 @@ public final class SMCSampler: @unchecked Sendable {
     }
 
     private func openConnection() {
+        // Skip AppleSMC inside the Mac App Store sandbox to avoid sandbox denial logs
+        guard !RuntimeEnvironment.isSandboxed else { return }
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
         guard service != 0 else { return }
         defer { IOObjectRelease(service) }

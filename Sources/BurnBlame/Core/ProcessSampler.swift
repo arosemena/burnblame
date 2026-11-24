@@ -298,7 +298,7 @@ public final class ProcessSampler: @unchecked Sendable {
         // Only runs `/bin/ps` (rate-limited to >= 3.5s) when whole-Mac CPU exceeds readable user processes
         // by >= 20% per-core, so WindowServer / mds_stores / kernel_task are caught with zero idle cost!
         let elapsedSec = elapsedNs.map { Double($0) / 1_000_000_000.0 } ?? 0.0
-        if !unreadablePIDs.isEmpty && (expectedTotalCoreCPU - observedUserCPUSum) >= 20.0 {
+        if !RuntimeEnvironment.isSandboxed && !unreadablePIDs.isEmpty && (expectedTotalCoreCPU - observedUserCPUSum) >= 20.0 {
             if nowEpoch - lastRootPSSampleEpoch >= 3.5 {
                 lastRootPSSampleEpoch = nowEpoch
                 cachedRootProcs = fetchHotRootProcessesViaPS(unreadablePIDs: unreadablePIDs)

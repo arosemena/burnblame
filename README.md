@@ -59,9 +59,16 @@ Click any process to answer *"where did this come from and is it a mistake?"* (r
 
 ## Installation
 
-### Requirements
+### Homebrew (Recommended once released)
+
+```bash
+brew tap arosemena/burnblame https://github.com/arosemena/burnblame
+brew install --cask burnblame
+```
+
+### Requirements (Build from Source)
 - **macOS 14.0 (Sonoma)** or later (Apple Silicon or Intel)
-- **Xcode / Swift 6.0+** (to build from source)
+- **Xcode / Swift 6.0+**
 
 ### Build & Install `BurnBlame.app`
 
@@ -107,6 +114,9 @@ BurnBlame is engineered to stay invisible while monitoring:
 
 ---
 
-## Distribution & Mac App Store Note
+## Distribution & Publishing
 
-BurnBlame relies on unsandboxed macOS system APIs (`AppleSMC` hardware sensors, `libproc` across other processes, `KERN_PROCARGS2`, and sending signals like `SIGSTOP`/`SIGKILL` to other apps). Because Mac App Store sandboxing restricts these APIs, **Developer ID signing + Apple Notarization** (direct `.dmg` / Homebrew Cask distribution) is the recommended distribution path for full functionality.
+See [`docs/PUBLISHING.md`](docs/PUBLISHING.md) for the complete release pipeline:
+- **Direct Notarized `.dmg`** (`./scripts/release-direct.sh`) — Universal `arm64` + `x86_64`, Developer ID signed & Apple notarized (full hardware sensors + process actions).
+- **Homebrew Cask** ([`Casks/burnblame.rb`](Casks/burnblame.rb)) — One-command install & upgrade.
+- **Mac App Store `.pkg`** (`./scripts/release-mas.sh`) — Sandboxed build (`-DAPP_STORE`) ready for App Store Connect.
